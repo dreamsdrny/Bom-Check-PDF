@@ -2,7 +2,9 @@
 BOM(Excel) 与 PDF 原理图 逐器件核对工具
 ========================================
 功能：
-  1. 读取 870-000837_REV_A.BOM.xlsx 的任意列
+
+author : Jean 金成 QQ：173722238 
+  1. 读取excel文件的任意列
   2. 精确解码 PDF 原理图文字（原理图的字体使用"字形编号+29=ASCII码"的自定义编码，
      需从内容流中还原，OCR 无法保证完整识别）
   3. 二者一一核对：一致(绿)/不一致(红) 全部列出
@@ -20,9 +22,9 @@ import traceback   # 大于异常堆栈和模块
 from collections import defaultdict #把`collections`里面的`defaultdict`拿过来直接用
 
 # ---------- 依赖检查 ----------
-REQUIRED = []  # 创建一个空列表，用于存储缺少的依赖包
-try:    #尝试导入依赖包，如果导入失败，则将缺少的包名添加到 REQUIRED 列表中
-    import pikepdf 
+REQUIRED = []
+try:
+    import pikepdf
 except ImportError:
     REQUIRED.append("pikepdf")
 try:
@@ -34,71 +36,71 @@ try:
 except ImportError:
     REQUIRED.append("openpyxl")
 
-if REQUIRED or True: # 如果 REQUIRED 列表不为空，说明有缺少的依赖包，则打印提示信息并退出程序
+if REQUIRED or True:
     import pikepdf  # 再次导入确保错误清晰
     import pdfplumber
     import openpyxl
 
 # ---------- PDF 解码 -------------------------------
-DESIGNATOR_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}(?:[A-Za-z]\d{1,2})?$")  # 设置正则表达式，用于匹配器件位号的格式
-PREFIXES_PARTS = set("CRLUDQJRTFXSWYKT") #器件的常规前缀集合，用于判断器件位号
+DESIGNATOR_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}(?:[A-Za-z]\d{1,2})?$")
+PREFIXES_PARTS = set("CRLUDQJRTFXSWYKT")
 
 
-def _build_code2glyph(fonts):  
+def _build_code2glyph(fonts):
     """把 Type3 字体的 Differences 数组解析成 {字符码: 字形名}。"""
-    code2glyph = {}  # 存储字符码到字形名的映射关系
-    for fn in fonts.keys():  # 遍历所有字体对象
-        f = fonts[fn]   # 获取字体对象
-        enc = f.get("/Encoding") #字体的编码信息
-        diffs = None    # 初始化数据
-        if enc is not None and hasattr(enc, "get"): # 如果存在get 获取数组
-            diffs = enc.get("/Differences", None)  
-        if diffs is None:  # 数组为空 跳过
+    code2glyph = {} # 定义字典，
+    for fn in fonts.keys(): # fn 为字体字符串，fonts[fn] 为字体对象  
+        f = fonts[fn]   # 赋值
+        enc = f.get("/Encoding") # 获取字体编码对象
+        diffs = None #数组为空
+        if enc is not None and hasattr(enc, "get"):  #
+            diffs = enc.get("/Differences", None)
+        if diffs is None:
             continue
-        try:
-            arr = [str(x) for x in diffs]
-        except Exception:
+        try:  # 将diffs中的每个元素转换为字符串，并存储在arr列表中
+            arr = [str(x) for x in diffs]  # 数组转换
+        except Exception: 
             continue
-        gmap = {}
+        gmap = {} # 定义字典 gmap
         start = None
-        names = []
+        names = [] # 列表 names 名称
 
-        def flush():
-            nonlocal gmap, start, names
+        def flush():  # 定义函数
+            nonlocal gmap, start, names #循环，将start和names中的元素添加到gmap字典中
             if start is None:
                 return
             cur = start
             for g in names:
                 gmap[cur] = g
                 cur += 1
-            start = None
+            start = None  # 处理完成，进行重置
             names = []
 
-        for x in arr:
-            if re.fullmatch(r"-?\d+", x):
-                flush()
-                start = int(x)
+        for x in arr: 
+            if re.fullmatch(r"-?\d+", x): # 正则表达式，判断元素是否整数（正负数字字符串）
+                flush() #调用函数
+                start = int(x) 
             else:
                 names.append(x)
-        flush()
+        flush() #调用，避免数组
         code2glyph[str(fn)] = gmap
     return code2glyph
 
 
-def decode_page(pdf, pageno):
+def decode_page(pdf, pageno): 
     """完整解码一页：返回[(字符, x, y, 字号)]，自原点为页面左上，y 越上越小。"""
-    from pikepdf import parse_content_stream
+    from pikepdf import parse_content_stream #库pikepdf中的函数parse_content_stream，解析PDF内容流
 
-    page = pdf.pages[pageno]
-    c2g = _build_code2glyph(page["/Resources"]["/Font"])
+    page = pdf.pages[pageno]  # 获取指定页码的页面对象
+    c2g = _build_code2glyph(page["/Resources"]["/Font"])  #`c2g` = code‑to‑glyph：**字体名称 → {字节编码：字形名}**
     ops = list(parse_content_stream(page.Contents))
-    tm = [1, 0, 0, 1, 0, 0]
-    tl = 0.0
-    cur_font = None
-    cur_size = 1.0
-    out = []
+    tm = [1, 0, 0, 1, 0, 0]  #状态变量
+    tl = 0.0 #原点00
+    cur_font = None #当前字体，默认不使用
+    cur_size = 1.0  #缩放系数默认1.0
+    out = [] #输出列表，存放解析之后提出的文本内容
     for op in ops:
-        name = str(op.operator)
+        name = str(op.operator) 
         ops_ = list(op.operands)
         if name == "BT":
             tm = [1, 0, 0, 1, 0, 0]
@@ -134,13 +136,15 @@ def decode_page(pdf, pageno):
     return out
 
 
-def _append_char(out, gmap, byte, tm, cur_size):
+def _append_char(out, gmap, byte, tm, cur_size): 
     glyph = gmap.get(byte)
     m = re.match(r"/g(\d+)$", glyph or "")
     num = int(m.group(1)) if m else None
     ch = chr(num + 29) if num is not None and 0 < num + 29 <= 0x10FFFF else "?"
     out.append((ch, tm[4], tm[5], cur_size))
 
+# 根据传入的字节值（byte）在字形映射表（gmap）中查找对应的字形名称，解析出字形编号，
+# 并将其转换为实际的字符，最后将该字符连同坐标与字号信息一起存入输出列表中。
 
 def decode_pdf_blocks(pdf_path):
     """解码 PDF 全部页面，返回页面文字行(列表) 与 全部字符。
@@ -164,54 +168,54 @@ def decode_pdf_blocks(pdf_path):
 
         # 以 pdfplumber 的 top(同行近似)为行键
         lines = defaultdict(list)
-        for item in merged:
-            ch, y, sz, x0, x1, top = item
-            key = round(top, 7)
-            lines[key].append((ch, x0, x1, sz, top))
+        for item in merged: # 遍历合并后的字符信息
+            ch, y, sz, x0, x1, top = item # 解包字符信息
+            key = round(top, 7) # 将 top 坐标四舍五入到小数点后 7 位，作为行的键
+            lines[key].append((ch, x0, x1, sz, top)) # 将字符信息添加到对应行的列表
 
-        page_words = []
-        page_text = []
-        for yk in sorted(lines.keys()):
-            seq = sorted(lines[yk], key=lambda t: t[1])
-            words = []
-            cur = ""
-            cx0 = None
-            prev_x1 = None
-            line_text = ""
-            gap_sz = None
-            for ch, x0, x1, sz, top in seq:
-                line_text += ch
-                if cur == "":
-                    cur = ch
-                    cx0 = x0
-                    gap_sz = max(0.5, sz * 0.30)
-                else:
-                    if x0 - prev_x1 > gap_sz:
-                        words.append((cur, cx0, prev_x1, top))
-                        cur = ch
-                        cx0 = x0
-                    else:
-                        cur += ch
-                    gap_sz = max(0.5, sz * 0.30)
-                prev_x1 = x1
-            if cur:
-                words.append((cur, cx0, prev_x1, top))
-            page_words.append((yk, words))
-            page_text.append((yk, line_text))
-        pages_words[pno + 1] = page_words
-        pages_text[pno + 1] = page_text
-        pages_words[pno + 1] = page_words
-        pages_text[pno + 1] = page_text
-    pdf.close()
-    return pages_words, pages_text, page_count
+        page_words = []  # 每页的行列表，每行包含字符及其位置信息
+        page_text = []  # 每页的行文字列表，每行仅包含文本内容
+        for yk in sorted(lines.keys()): # 按行键排序，确保行的顺序与 PDF 中的顺序一致
+            seq = sorted(lines[yk], key=lambda t: t[1]) # 按字符的 x0 坐标排序，确保字符在行内的顺序正确
+            words = [] # 存储当前行的单词列表，每个单词包含文本及其位置信息
+            cur = "" # 当前正在构建的单词文本
+            cx0 = None # 当前单词的起始 x 坐标
+            prev_x1 = None # 上一个字符的结束 x 坐标
+            line_text = ""  # 当前行的完整文本内容
+            gap_sz = None   # 当前字符间距阈值，用于判断是否需要分词
+            for ch, x0, x1, sz, top in seq: # 遍历当前行的字符信息
+                line_text += ch # 将字符添加到当前行的完整文本内容中
+                if cur == "": # 如果当前单词为空，说明这是新单词的开始
+                    cur = ch # 将当前字符作为新单词的起始字符
+                    cx0 = x0  # 将当前字符的起始 x 坐标作为新单词的起始坐标
+                    gap_sz = max(0.5, sz * 0.30) # 设置当前字符间距阈值，确保至少为 0.5 或当前字符字号的 30%
+                else: # 如果当前单词不为空，说明正在构建一个单词
+                    if x0 - prev_x1 > gap_sz: # 如果当前字符的起始 x 坐标与上一个字符的结束 x 坐标之间的间距大于阈值，说明这是一个新单词
+                        words.append((cur, cx0, prev_x1, top)) # 将当前单词及其位置信息添加到单词列表中
+                        cur = ch  # 将当前字符作为新单词的起始字符
+                        cx0 = x0 # 将当前字符的起始 x 坐标作为新单词的起始坐标
+                    else:  # 如果当前字符与上一个字符之间的间距不大于阈值，说明它们属于同一个单词
+                        cur += ch   # 将当前字符添加到当前单词中
+                    gap_sz = max(0.5, sz * 0.30) # 更新当前字符间距阈值，确保至少为 0.5 或当前字符字号的 30%    
+                prev_x1 = x1 # 更新上一个字符的结束 x 坐标为当前字符的结束 x 坐标
+            if cur: # 如果当前单词不为空，说明还有一个未添加的单词
+                words.append((cur, cx0, prev_x1, top)) # 将最后一个单词及其位置信息添加到单词列表中
+            page_words.append((yk, words)) # 将当前行的 y 坐标及其单词列表添加到页面的行列表中
+            page_text.append((yk, line_text))  # 将当前行的 y 坐标及其完整文本内容添加到页面的行文字列表中
+        pages_words[pno + 1] = page_words # 将当前页的行列表存储到页面字典中，页码从 1 开始
+        pages_text[pno + 1] = page_text # 将当前页的行文字列表存储到页面字典中，页码从 1 开始
+        pages_words[pno + 1] = page_words # 将当前页的行列表存储到页面字典中，页码从 1 开始
+        pages_text[pno + 1] = page_text # 将当前页的行文字列表存储到页面字典中，页码从 1 开始
+    pdf.close() # 关闭 PDF 文件，释放资源
+    return pages_words, pages_text, page_count # 返回  行列表、列表、总页数
 
 
-def _get_char_boxes(pdf_path, pageno):   #传页路径，传页参数
+def _get_char_boxes(pdf_path, pageno):
     try:
         with pdfplumber.open(pdf_path) as p:
             return [
-                (c["x0"], c["top"], c["x1"], c["bottom"])  #提取四个坐标，x0(左)、top(上)、x1(右)、bottom(下)
-                for c in p.pages[pageno].chars # 获取指定页码的字符信息
+                (c["x0"], c["top"], c["x1"], c["bottom"])
+                for c in p.pages[pageno].chars
             ]
     except Exception:
         return None
@@ -229,6 +233,144 @@ def extract_designators(pages_words):
                 if DESIGNATOR_RE.match(up) and up[0] in PREFIXES_PARTS:
                     tokens[up].append(pno)
     return tokens, all_words
+
+
+def build_pdf_designator_annotations(pages_words):
+    """给 PDF 里每个位号找邻近标注词（值/封装/型号）。
+    返回 {位号: {'pages':[页码], 'near':[附近词,去重]}}。
+    """
+    tokens, _ = extract_designators(pages_words)
+    # 每页的所有词
+    page_words = {} # 
+    for pno, pwords in pages_words.items():
+        plist = []
+        for y, words in pwords:
+            for w, x0, x1, top in words:
+                if re.match(r"^[\w.+/@-]{2,}$", w):
+                    plist.append({"y": y, "x": x0, "w": w.upper()})
+        page_words[pno] = plist
+
+    out = {}
+    for des, pages in tokens.items():
+        des_pos = None
+        for pno, pwords in pages_words.items():
+            if pno not in pages:
+                continue
+            for y, words in pwords:
+                for w, x0, x1, top in words:
+                    if w.upper() == des:
+                        des_pos = (pno, y, x0)
+                        break
+                if des_pos:
+                    break
+            if des_pos:
+                break
+        near = []
+        if des_pos:
+            pno, dy, dx = des_pos
+            for it in page_words.get(pno, []):
+                if abs(it["y"] - dy) <= 120 and abs(it["x"] - dx) <= 260 and it["w"] != des:
+                    near.append(it["w"])
+        out[des] = {"pages": pages, "near": sorted(set(near))[:15]}
+    return out
+
+
+def app_smart(v):
+    """模块级包装，避免重复定义 smart_norm_value。"""
+    try:
+        return smart_norm_value(v)
+    except Exception:
+        return v
+
+
+def compare_pdf_to_excel(pdf_path, bom_path, primary="Part Reference"):
+    """以 PDF 位号为准，检查 Excel 中是否存在且 Value 是否疑似一致。
+    返回 rows 与 stats。"""
+    pages_words, pages_text, _ = decode_pdf_blocks(pdf_path)
+    annotations = build_pdf_designator_annotations(pages_words)
+
+    headers, data = load_bom(bom_path)
+    primary = primary if primary in headers else headers[0]
+    pidx = headers.index(primary)
+    vidx = headers.index("Value") if "Value" in headers else None
+    fidx = headers.index("PCB Footprint") if "PCB Footprint" in headers else None
+    qidx = headers.index("Quantity") if "Quantity" in headers else None
+
+    excel_index = {}
+    for row in data:
+        for d in split_designators_text(row["values"][pidx]):
+            excel_index.setdefault(d.upper(), []).append(row)
+
+    rows = []
+    n_found = n_pdf_only = n_ok = n_may = 0
+    for des in sorted(annotations.keys()):
+        ann = annotations[des]
+        near = ann["near"]
+        near_text = "; ".join(near[:8])
+        excel_rows = excel_index.get(des)
+        if not excel_rows:
+            n_pdf_only += 1
+            rows.append({"item": des, "status": "PDF有Excel无", "valueA": "", "valueB": "",
+                         "footA": "", "footB": "", "near": near_text, "qty": ""})
+            continue
+        n_found += 1
+        er = excel_rows[0]
+        ev = er["values"][vidx] if vidx is not None else ""
+        ef = er["values"][fidx] if fidx is not None else ""
+        eq = er["values"][qidx] if qidx is not None else ""
+        # 值/封装是否能在邻近标注中找到（直接命中 / 归一化命中 / 短数值允许子串命中）
+        nv = app_smart(ev)
+        nf = app_smart(ef)
+        hit = False
+        candidates = [str(x) for x in [ev, nv, ef, nf] if x]
+        for c in candidates:
+            c = str(c).strip().lower()
+            if not c:
+                continue
+            for w in near:
+                wl = w.lower()
+                if c == wl:
+                    hit = True
+                    break
+                if app_smart(c) == app_smart(w):
+                    hit = True
+                    break
+                # 仅当候选词是短数值(<=5字符)时才做子串匹配(值如 49.9/10K 常用)
+                # 型号/封装等长词只整词匹配，避免 "13" 误命中 "TMUX1308..."
+                c_short = re.fullmatch(r"[\d.]{1,6}", c)
+                if c_short and len(c) <= 5 and (c in wl or wl in c):
+                    hit = True
+                    break
+            if hit:
+                break
+        if hit:
+            n_ok += 1
+            rows.append({"item": des, "status": "一致", "valueA": ev, "valueB": "",
+                         "footA": ef, "footB": "", "near": near_text, "qty": eq})
+        else:
+            n_may += 1
+            rows.append({"item": des, "status": "待确认(值/封装在PDF上未匹配)", "valueA": ev,
+                         "valueB": "", "footA": ef, "footB": "", "near": near_text, "qty": eq})
+
+    stats = {
+        "all": {
+            "主键": primary,
+            "PDF位号总数": len(annotations),
+            "Excel中找到": n_found,
+            "PDF有Excel无": n_pdf_only,
+            "值疑似一致": n_ok,
+            "值疑似不一致/待确认": n_may,
+        },
+        "bad": [{"designator": r["item"], "row": ""} for r in rows
+                if r["status"] != "一致"],
+        "extra": [r["item"] for r in rows if r["status"] == "PDF有Excel无"],
+        "in_bom": {r["item"] for r in rows if r["status"] != "PDF有Excel无"},
+        "common": [r["item"] for r in rows if r["status"] == "一致"],
+        "only_a": [r["item"] for r in rows if r["status"] == "PDF有Excel无"],
+        "only_b": [],
+        "mode": "pdf2excel",
+    }
+    return rows, stats
 
 
 # ---------- BOM 读取 --------------------------------
@@ -402,58 +544,73 @@ def normalize_cap_value(s):
     s = (s or "").strip().lower().replace(" ", "")
     if not s:
         return None
-    m = re.match(r"^([\d.]+)\s*([a-z\u00b5\u03bc\u03a9]*)$", s)
+    s = re.sub(r"[^0-9.a-z\u00b5\u03bc]", "", s)
+    if not re.search(r"\d", s):
+        return s or None
+    m = re.match(r"^([\d.]+)([a-z\u00b5\u03bc]*)$", s)
     if not m:
-        s2 = re.sub(r"[^0-9.a-z\u00b5\u03bc]", "", s)
-        m = re.match(r"^([\d.]+)([a-z\u00b5\u03bc]+)$", s2)
-        if not m:
-            return s
-        num, unit = m.groups()
-    else:
-        num, unit = m.groups()
+        return s
+    num, unit = m.groups()
+    # 数字在前、代号在后的解析
     try:
         val = float(num)
     except Exception:
         return s
-    mult = 1
-    for u, m_ in _CAP_UNITS:
-        if unit.startswith(u):
-            mult = m_
+    unit = unit or "f"
+    mult = 1  # 基础单位 pF
+    # 从大到小匹配（f 是最小根基，先处理 μ/m/n/p）
+    table = {"pf": 1, "p": 1, "nf": 1000, "n": 1000, "uf": 1_000_000,
+             "μf": 1_000_000, "µf": 1_000_000, "u": 1_000_000, "mf": 1_000_000,
+             "f": 1_000_000_000}
+    for u0, mm in sorted(table.items(), key=lambda kv: -len(kv[0])):
+        if unit == u0 or unit.endswith(u0):
+            mult = mm
             break
     return round(val * mult, 3)
 
 
 def normalize_res_value(s):
-    """把电阻值归一化为 ohm：1K=1000，2K4=2400。"""
+    """把电阻值归一化为 ohm：1K=1000，2K4=2400，4R7=4.7，100R=100。"""
     s = (s or "").strip().lower().replace(" ", "")
     if not s:
-        return None
-    # 简写 R：4R7=4.7，2K4=2400
-    m = re.match(r"^([\d.]+)\s*([a-z\u03a9\u03c9]*)$", s)
-    if m:
-        num, unit = m.groups()
-    else:
-        s2 = re.sub(r"[^0-9.a-z\u03a9\u03c9rk]", "", s)
-        m = re.match(r"^([\d.]+)([a-z\u03a9\u03c9rk]+)$", s2)
+        return None     # 4R7 / 2K4 / 1M5 简写形式
+    if re.match(r"^\d+[rkm][\d.]+$", s):
+        m = re.match(r"^(\d+)([rkm])([\d.]+)$", s)
+        base = float(m.group(1) + "." + m.group(3))
+        mult = {"r": 1, "k": 1000, "m": 1_000_000}[m.group(2)]
+        return round(base * mult, 3)
+    # 100R / 1K5 结尾形式
+    if re.match(r"^[\d.]+[rkm]$", s):
+        m = re.match(r"^([\d.]+)([rkm])$", s)
+        mult = {"r": 1, "k": 1000, "m": 1_000_000}[m.group(2)]
+        return round(float(m.group(1)) * mult, 3)
+    if "ohm" in s or "Ω" in s or "ω" in s:
+        m = re.match(r"^([\d.]+)\s*([a-z\u03a9\u03c9]*)$",
+                     s.replace("mω", "m").replace("mΩ", "m").replace("kΩ", "k"))
         if not m:
             return s
-        num, unit = "1" if s2[0] == "r" else (m.group(1) if m else ""), (m.group(2) if m else "")
-    try:
-        val = float(num) if s[0].lower() != "r" else float(num) if num else float(s[1:])
-    except Exception:
-        return s
-    # 含 R 的 4R7 形式
-    if "r" in s and not s[0].isdigit():
+        num, unit = m.groups()
+        mult = 1
+        table = {"pohm": 1e-6, "mohm": 1e-3, "ohm": 1, "Ω": 1, "ω": 1,
+                 "kohm": 1000, "kω": 1000, "mω": 1_000_000, "mohm": 1e-3}
+        for u0, mm in sorted(table.items(), key=lambda kv: -len(kv[0])):
+            if unit.endswith(u0):
+                mult = mm
+                break
         try:
-            return float(s.replace("r", "."))
+            return round(float(num) * mult, 3)
         except Exception:
-            pass
-    mult = 1
-    for u, m_ in _RES_UNITS:
-        if unit.startswith(u):
-            mult = m_
-            break
-    return round(val * mult, 3)
+            return s
+    # "10k" "100k" "1k" 等
+    m = re.match(r"^([\d.]+)\s*([km]?)$", s)
+    if m:
+        num, unit = m.groups()
+        try:
+            mult = {"": 1, "k": 1000, "m": 1_000_000}.get(unit, 1)
+            return round(float(num) * mult, 3)
+        except Exception:
+            return s
+    return s
 
 
 def smart_norm_value(v):
@@ -461,12 +618,25 @@ def smart_norm_value(v):
     s = str(v or "").strip()
     if not s:
         return None
-    if any(ch in s.lower() for ch in ["u", "μ", "µ", "m", "n", "p", "k"]):
-        s2 = s.lower()
-        if "h" in s2 or "µ" in s2 or "μ" in s2 or "mf" in s2:
-            return normalize_cap_value(s)
-        if any(u in s2 for u in ["ohm", "Ω", "ω", "r"]) or ("k" in s2 or "m" in s2):
-            return normalize_res_value(s)
+    s2 = s.lower()
+
+    # 电容类：F / uF / nF / pF
+    if any(unit in s2 for unit in ["uf", "μf", "µf", "nf", "pf", "mf"]):
+        r = normalize_cap_value(s)
+        if r is not None:
+            return r
+    # 电阻类：Ω/ohm/K(欧)/R 缩写
+    if (any(unit in s2 for unit in ["ohm", "Ω", "ω", "k", "r"]) and
+            "f" not in s2 and "uf" not in s2 and "µ" not in s2 and "μ" not in s2):
+        r = normalize_res_value(s)
+        if r is not None and r != s:
+            return r
+    # 纯数字：统一成数值（1 vs 1.0）
+    if re.fullmatch(r"[0-9.]+", s):
+        try:
+            return float(s)
+        except Exception:
+            return s
     return s
 
 
@@ -738,12 +908,35 @@ def gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir):
     wb = openpyxl.Workbook()
     ws = wb.active
     if is_compare:
-        # 对比明细：一致 / 仅A / 仅B
-        ws.title = "对比明细"
-        ws.append(["器件/位号", "结果", "文件A行号/页码", "文件B行号/页码"])
-        for row in rows:
-            ws.append([row["item"], row["status"], row["a_pages"] or row["a"],
-                       row["b_pages"] or row["b"]])
+        mode = stats.get("mode", "set")
+        if mode == "pdf2excel":
+            ws.title = "PDF→Excel 器件核对"
+            ws.append(["PDF位号", "核对结果", "Excel值(Value)", "Excel封装(Footprint)",
+                       "Excel数量", "PDF附近标注"])
+            for row in rows:
+                ws.append([row["item"], row["status"], row["valueA"], row["footA"],
+                           row["qty"], row["near"]])
+        elif mode == "detail":
+            ws.title = "逐位号对比"
+            ws.append(["位号(主键)", "结果", "字段", "文件A值", "文件B值"])
+            for row in rows:
+                if row["field_diffs"]:
+                    for d in row["field_diffs"]:
+                        ws.append([row["item"], row["status"], d["field"], d["a"], d["b"]])
+                else:
+                    ws.append([row["item"], row["status"], "", "", ""])
+        elif mode == "group":
+            ws.title = "按物料分组"
+            ws.append(["物料分组(键)", "结果", "数量A", "数量B", "位号A", "位号B"])
+            for row in rows:
+                ws.append([row["item"], row["status"], row["qty_a"], row["qty_b"],
+                           ", ".join(row.get("refs_a", [])), ", ".join(row.get("refs_b", []))])
+        else:
+            ws.title = "对比明细"
+            ws.append(["器件/位号", "结果", "文件A行号/页码", "文件B行号/页码"])
+            for row in rows:
+                ws.append([row["item"], row["status"], row["a_pages"] or row["a"],
+                           row["b_pages"] or row["b"]])
     else:
         ws.title = "核对明细"
         ws.append(
@@ -793,7 +986,7 @@ def gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir):
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write("=" * 70 + "\n")
         if is_compare:
-            f.write("文件对比报告（Excel vs Excel / PDF vs PDF）\n")
+            f.write("文件对比报告（Excel vs Excel / PDF vs PDF / PDF→Excel）\n")
         else:
             f.write("BOM 与 PDF 原理图 器件核对报告\n")
         f.write("来源: %s\n" % bom_path)
@@ -803,17 +996,48 @@ def gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir):
         for k, v in stats["all"].items():
             f.write("  %-30s: %s\n" % (k, v))
         if is_compare:
-            f.write("\n【仅文件A有】\n")
-            for b in stats["bad"]:
-                f.write("  %s\n" % b["designator"])
-            f.write("\n【仅文件B有】\n")
-            for t in sorted(stats["extra"]):
-                f.write("  %s\n" % t)
-            f.write("\n【明细】\n")
-            for row in rows:
-                f.write("  %-6s | %-10s | A:%s | B:%s\n"
-                        % (row["status"], row["item"], row["a_pages"] or row["a"],
-                           row["b_pages"] or row["b"]))
+            mode = stats.get("mode", "set")
+            if mode == "pdf2excel":
+                f.write("\n【疑似不一致 / 待确认】\n")
+                for b in stats["bad"]:
+                    f.write("  %s\n" % b["designator"])
+                f.write("\n【PDF有Excel无】\n")
+                for t in sorted(stats["extra"]):
+                    f.write("  %s\n" % t)
+                f.write("\n【明细】\n")
+                for row in rows:
+                    f.write("  [%s] %s  Excel值=%s 封装=%s  附近标注=%s\n"
+                            % (row["status"], row["item"], row["valueA"], row["footA"], row["near"]))
+            else:
+                f.write("\n【仅文件A有】\n")
+                for b in stats["bad"]:
+                    f.write("  %s\n" % b["designator"])
+                f.write("\n【仅文件B有】\n")
+                for t in sorted(stats["extra"]):
+                    f.write("  %s\n" % t)
+                f.write("\n【明细】\n")
+                if mode == "detail":
+                    for row in rows:
+                        if row["field_diffs"]:
+                            f.write("  [%s] %s\n" % (row["status"], row["item"]))
+                            for d in row["field_diffs"]:
+                                f.write("       字段 %-20s  A=%s  B=%s\n"
+                                        % (d["field"], d["a"] or "(空)", d["b"] or "(空)"))
+                        else:
+                            f.write("  [%s] %s\n" % (row["status"], row["item"]))
+                elif mode == "group":
+                    for row in rows:
+                        f.write("  [%s] %s  A数量=%d B数量=%d\n"
+                                % (row["status"], row["item"], row["qty_a"], row["qty_b"]))
+                        if row.get("only_a"):
+                            f.write("       A独有位号: %s\n" % ", ".join(row["only_a"]))
+                        if row.get("only_b"):
+                            f.write("       B独有位号: %s\n" % ", ".join(row["only_b"]))
+                else:
+                    for row in rows:
+                        f.write("  %-6s | %-10s | A:%s | B:%s\n"
+                                % (row["status"], row["item"], row["a_pages"] or row["a"],
+                                   row["b_pages"] or row["b"]))
         else:
             f.write("\n【不一致 - BOM位号在PDF中未找到】\n")
             for b in stats["bad"]:
@@ -1242,7 +1466,7 @@ def _compare_type_row(parent, lb_compare, lb_mode, lb_col, lb_xlsx, lb_pdf, lb_f
     ttk.Label(row, text="对比类型", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
     cmb = ttk.Combobox(row, textvariable=lb_compare, width=26, state="readonly")
     cmb.pack(side="left", fill="x", expand=True)
-    cmb["values"] = ["BOM vs PDF", "Excel vs Excel", "PDF vs PDF"]
+    cmb["values"] = ["BOM vs PDF", "Excel vs Excel", "PDF vs PDF", "PDF → Excel(器件核对)"]
     cmb.current(0)
     cmb.bind("<<ComboboxSelected>>", lambda e: _on_compare_change(
         lb_compare, lb_mode, lb_col, lb_xlsx, lb_pdf, lb_file_b, app, var_status))
@@ -1257,6 +1481,9 @@ def _on_compare_change(lb_compare, lb_mode, lb_col, lb_xlsx, lb_pdf, lb_file_b, 
     elif t == "PDF vs PDF":
         lb_mode.set("位号对比")
         var_status.set("请选择两个 PDF 文件（A=基准，B=对比）")
+    elif t == "PDF → Excel(器件核对)":
+        lb_mode.set("器件核对")
+        var_status.set("以 PDF 位号为准，核对 Excel 中是否存在该器件及 Value/Footprint")
     else:
         lb_mode.set("位号核对(推荐)")
         var_status.set("请选择 BOM 与 PDF 文件")
@@ -1269,14 +1496,19 @@ def _file_rows(parent, lb_compare, lb_xlsx, lb_pdf, lb_file_b, app, var_status, 
     rA.pack(fill="x", pady=3)
     lab_a = ttk.Label(rA, text="文件 A", style="Sub.TLabel", width=11, anchor="w")
     lab_a.pack(side="left")
-    var_a = lb_xlsx  # 复用
-    eA = ttk.Entry(rA, textvariable=var_a, width=30)
+    eA = ttk.Entry(rA, textvariable=lb_xlsx, width=30)
     eA.pack(side="left", fill="x", expand=True)
     ttk.Button(rA, text="浏览", width=6,
                command=lambda: _browse_file(app, "A", lb_compare, lb_xlsx, lb_pdf, lb_file_b,
                                             var_status, lb_col, root)).pack(side="left", padx=(4, 0))
 
-    # 行 B（第二文件）：BOM vs PDF 时=PDF；对比模式=文件B
+    def _bind_a():
+        if lb_compare.get() in ("PDF vs PDF", "PDF → Excel(器件核对)"):
+            eA.configure(textvariable=lb_pdf)
+        else:
+            eA.configure(textvariable=lb_xlsx)
+
+    # 行 B（第二文件）：BOM vs PDF 时=PDF；对比模式=文件B；PDF→Excel时=Excel
     rB = ttk.Frame(parent, style="Card.TFrame")
     rB.pack(fill="x", pady=3)
     lab_b = ttk.Label(rB, text="文件 B", style="Sub.TLabel", width=11, anchor="w")
@@ -1286,6 +1518,13 @@ def _file_rows(parent, lb_compare, lb_xlsx, lb_pdf, lb_file_b, app, var_status, 
     ttk.Button(rB, text="浏览", width=6,
                command=lambda: _browse_file(app, "B", lb_compare, lb_xlsx, lb_pdf, lb_file_b,
                                             var_status, lb_col, root)).pack(side="left", padx=(4, 0))
+
+    # PDF→Excel 模式：行B 显示 Excel，应绑定 lb_xlsx；切换时改绑定
+    def _bind_b():
+        if lb_compare.get() == "PDF → Excel(器件核对)":
+            eB.configure(textvariable=lb_xlsx)
+        else:
+            eB.configure(textvariable=lb_pdf)
 
     # 行 C（仅对比模式的第二文件）：在对比模式下显示
     rC = ttk.Frame(parent, style="Card.TFrame")
@@ -1304,9 +1543,16 @@ def _file_rows(parent, lb_compare, lb_xlsx, lb_pdf, lb_file_b, app, var_status, 
 
     def _refresh():
         t = lb_compare.get()
+        _bind_a()
+        _bind_b()
         if t == "BOM vs PDF":
             lab_a.configure(text="BOM Excel")
             lab_b.configure(text="原理图 PDF")
+            rC.pack_forget()
+            rB.pack(in_=parent, fill="x", pady=3)
+        elif t == "PDF → Excel(器件核对)":
+            lab_a.configure(text="原理图 PDF (基准)")
+            lab_b.configure(text="BOM Excel (对照)")
             rC.pack_forget()
             rB.pack(in_=parent, fill="x", pady=3)
         else:
@@ -1376,6 +1622,32 @@ def _browse_file(app, slot, lb_compare, lb_xlsx, lb_pdf, lb_file_b, var_status, 
                                                 os.path.basename(app["file_b"])))
         return
 
+    if t == "PDF → Excel(器件核对)":
+        # A = 原理图 PDF（基准），B = BOM Excel（对照）
+        if slot == "A":
+            p = filedialog.askopenfilename(title="选择原理图 PDF", initialdir=d,
+                                           filetypes=[("PDF", "*.pdf"), ("所有文件", "*.*")])
+            if p:
+                app["pdf_path"] = p
+                lb_pdf.set(os.path.basename(p))
+                var_status.set("已选原理图 PDF：%s" % os.path.basename(p))
+        else:
+            p = filedialog.askopenfilename(title="选择 BOM Excel", initialdir=d,
+                                           filetypes=[("Excel", "*.xlsx"), ("所有文件", "*.*")])
+            if p:
+                app["bom_path"] = p
+                lb_xlsx.set(os.path.basename(p))
+                try:
+                    headers, data = load_bom(p)
+                    app["headers"], app["data"] = headers, data
+                    if lb_col is not None and "Part Reference" in headers:
+                        lb_col.set("Part Reference")
+                    _refresh_preview(app, lb_col)
+                    var_status.set("已载入 BOM Excel：%s，共 %d 行" % (os.path.basename(p), len(data)))
+                except Exception as e:
+                    messagebox.showerror("错误", "BOM Excel 读取失败:\n%s" % e, parent=root)
+        return
+
     # BOM vs PDF
     if slot == "A":
         _browse("BOM", app, root, var_status, lb_col)
@@ -1421,21 +1693,57 @@ def _refresh_preview(app, lb_col):
         tree.insert("", "end", values=[str(v)[:60] for v in row["values"]])
     if lb_col is not None and "Part Reference" in app["headers"]:
         lb_col.set("Part Reference")
+    # 通知"核对设置"刷新列下拉（核对列 / Excel列）
+    for cb in (app.get("_col_refresh_callbacks") or []):
+        try:
+            cb()
+        except Exception:
+            pass
 
 
 # ---------- 核对设置 ----------
 def _setting_rows(parent, lb_col, lb_mode, app, lb_xlsx, lb_pdf, lb_file_b, lb_compare,
                   var_status, root):
+    # 核对列：可编辑，默认使用当前 Excel 的 Bit 号列
     r1 = ttk.Frame(parent, style="Card.TFrame")
     r1.pack(fill="x", pady=3)
     ttk.Label(r1, text="核对列", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
-    cmb_col = ttk.Combobox(r1, textvariable=lb_col, width=28, state="readonly")
+    cmb_col = ttk.Combobox(r1, textvariable=lb_col, width=28)
     cmb_col.pack(side="left", fill="x", expand=True)
+
+    # Excel列：显示文件A 实际有哪些列，选择作为主键/搜索值来源的列
     r1b = ttk.Frame(parent, style="Card.TFrame")
     r1b.pack(fill="x", pady=3)
     ttk.Label(r1b, text="Excel列", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
-    cmb_col2 = ttk.Combobox(r1b, textvariable=lb_col, width=28, state="readonly")
+    lb_col_b = tk.StringVar()
+    cmb_col2 = ttk.Combobox(r1b, textvariable=lb_col_b, width=28)
     cmb_col2.pack(side="left", fill="x", expand=True)
+
+    def _fill_columns(*_):
+        """把文件A的列名填进两个下拉，并自动选中 'Part Reference'（若无则第0列）。"""
+        headers = app.get("headers") or []
+        opts = list(headers)
+        cmb_col["values"] = opts
+        cmb_col2["values"] = opts
+        if opts:
+            cur = lb_col.get()
+            if cur not in opts:
+                lb_col.set("Part Reference" if "Part Reference" in opts else opts[0])
+            cur2 = lb_col_b.get()
+            if cur2 not in opts:
+                lb_col_b.set(lb_col.get())
+
+    cmb_col2.bind("<<ComboboxSelected>>", lambda e: lb_col.set(lb_col_b.get()))
+
+    # 文件变化/类型变化时刷新列名
+    _fill_columns()
+    cbs = app.get("_col_refresh_callbacks") or []
+    if not isinstance(cbs, list):
+        cbs = []
+    cbs.append(_fill_columns)
+    app["_col_refresh_callbacks"] = cbs
+    lb_xlsx.trace("w", _fill_columns)
+    lb_compare.trace("w", _fill_columns)
 
     r2 = ttk.Frame(parent, style="Card.TFrame")
     r2.pack(fill="x", pady=3)
@@ -1444,6 +1752,80 @@ def _setting_rows(parent, lb_col, lb_mode, app, lb_xlsx, lb_pdf, lb_file_b, lb_c
     cmb_mode.pack(side="left", fill="x", expand=True)
     cmb_mode["values"] = ["位号核对(推荐)", "全文匹配", "位号对比"]
     cmb_mode.current(0)
+
+    # 主键比对方式：仅在 Excel vs Excel 模式下生效
+    r4 = ttk.Frame(parent, style="Card.TFrame")
+    r4.pack(fill="x", pady=3)
+    ttk.Label(r4, text="主键比对", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
+    cmb_key = ttk.Combobox(r4, textvariable=app.setdefault("key_var", __import__("tkinter").StringVar()),
+                           width=28, state="readonly")
+    cmb_key.pack(side="left", fill="x", expand=True)
+    cmb_key["values"] = ["A 逐位号比对(精细)", "B 按物料分组(聚合)"]
+    cmb_key.current(0)
+
+    # 比对字段选择（方式A用）
+    r5 = ttk.Frame(parent, style="Card.TFrame")
+    r5.pack(fill="x", pady=3)
+    ttk.Label(r5, text="比对字段", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
+    cmb_fields = ttk.Combobox(r5, textvariable=app.setdefault("fields_var", __import__("tkinter").StringVar()),
+                              width=28)
+    cmb_fields.pack(side="left", fill="x", expand=True)
+    cmb_fields["values"] = ["Value,Quantity,Manufacturer PN",
+                            "Value,Quantity",
+                            "Value,PCB Footprint,Quantity,Manufacturer PN",
+                            "Value,PCB Footprint,Manufacturer PN"]
+    cmb_fields.current(0)
+
+    # 分组键选择（方式B用）
+    r6 = ttk.Frame(parent, style="Card.TFrame")
+    r6.pack(fill="x", pady=3)
+    ttk.Label(r6, text="分组键", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
+    cmb_grp = ttk.Combobox(r6, textvariable=app.setdefault("grp_var", __import__("tkinter").StringVar()),
+                           width=28)
+    cmb_grp.pack(side="left", fill="x", expand=True)
+    cmb_grp["values"] = ["Value,Manufacturer PN",
+                         "Value,PCB Footprint",
+                         "Value,Manufacturer PN,PCB Footprint",
+                         "Value"]
+    cmb_grp.current(0)
+
+    # 根据对比类型显隐主键比对设置
+    def _sync_key_rows(*_):
+        ctype = lb_compare.get()
+        if ctype == "Excel vs Excel":
+            r4.pack(in_=parent, fill="x", pady=3, before=r2 if r2.winfo_ismapped() else None)
+            r5.pack(in_=parent, fill="x", pady=3, before=r3)
+            r6.pack(in_=parent, fill="x", pady=3, before=r3)
+        else:
+            r4.pack_forget()
+            r5.pack_forget()
+            r6.pack_forget()
+    # 保持顺序：r1,r1b,r2,r4,r5,r6,r3
+    r4.pack_forget(); r5.pack_forget(); r6.pack_forget()
+    lb_compare.trace("w", _sync_key_rows)
+
+    def _sync_key_var(*_):
+        v = cmb_key.get()
+        app["key_style"] = "B" if v.startswith("B") else "A"
+    cmb_key.bind("<<ComboboxSelected>>", _sync_key_var)
+    cmb_key.bind("<<ComboboxSelected>>", lambda e: _sync_key_var(e), add="+")
+
+    def _sync_fields(*_):
+        s = cmb_fields.get()
+        if s:
+            app["detail_fields"] = [x.strip() for x in s.split(",") if x.strip()]
+    cmb_fields.bind("<FocusOut>", _sync_fields)
+
+    def _sync_grp(*_):
+        s = cmb_grp.get()
+        if s:
+            app["group_fields"] = [x.strip() for x in s.split(",") if x.strip()]
+    cmb_grp.bind("<FocusOut>", _sync_grp)
+
+    # 默认值
+    app["key_style"] = "A"
+    app["detail_fields"] = ["Value", "Quantity", "Manufacturer PN"]
+    app["group_fields"] = ["Value", "Manufacturer PN"]
 
     r3 = ttk.Frame(parent, style="Card.TFrame")
     r3.pack(fill="x", pady=(8, 2))
@@ -1532,12 +1914,34 @@ def _do_check(app, lb_xlsx, lb_pdf, lb_file_b, lb_compare, lb_col, lb_mode, var_
         # 补齐路径
         _sync_paths(app, lb_xlsx, lb_pdf, lb_file_b, lb_compare)
 
+        if ctype == "PDF → Excel(器件核对)":
+            if not app["pdf_path"] or not app["bom_path"]:
+                root.after(0, lambda: messagebox.showwarning("提示", "请选择 原理图PDF(A) 与 BOM Excel(B)", parent=root))
+                return
+            root.after(0, lambda: var_status.set("正在以 PDF 位号为准核对 Excel..."))
+            rows, stats = compare_pdf_to_excel(app["pdf_path"], app["bom_path"],
+                                               lb_col.get() or "Part Reference")
+            app["result_rows"] = rows
+            app["stats"] = stats
+            oa = ob = 0
+            root.after(0, lambda: _fill_compare_results(app, root, var_status, oa, ob))
+            return
+
         if ctype == "Excel vs Excel":
             if not app["bom_path"] or not app["file_b"]:
                 root.after(0, lambda: messagebox.showwarning("提示", "请选择 文件A 与 文件B (两个Excel)", parent=root))
                 return
-            root.after(0, lambda: var_status.set("正在对比两个 Excel 位号..."))
-            rows, stats = compare_excel_excel(app["bom_path"], app["file_b"], lb_col.get() or "Part Reference")
+            # 主键比对方式：A 逐位号精细 / B 按物料分组
+            key_style = app.get("key_style", "A")
+            root.after(0, lambda: var_status.set(
+                "正在按 %s 对比两个 Excel..." % ("物料分组" if key_style == "B" else "位号(主键)精细化")))
+            if key_style == "B":
+                gf = app.get("group_fields") or ["Value", "Manufacturer PN"]
+                rows, stats = compare_excel_group(app["bom_path"], app["file_b"], tuple(gf))
+            else:
+                fields = app.get("detail_fields") or ["Value", "Quantity", "Manufacturer PN"]
+                rows, stats = compare_excel_detail(app["bom_path"], app["file_b"],
+                                                   lb_col.get() or "Part Reference", tuple(fields))
             app["result_rows"] = rows
             app["stats"] = stats
             oa, ob = len(stats["only_a"]), len(stats["only_b"])
@@ -1652,22 +2056,72 @@ def _fill_compare_results(app, root, var_status, oa, ob):
         return
     for i in tree.get_children():
         tree.delete(i)
-    # 对比结果表：列= 器件 | 结果 | A侧 | B侧
-    tree["columns"] = ("item", "status", "a", "b")
-    for c, (t, w) in {"item": ("器件/位号", 130), "status": ("结果", 90),
-                      "a": ("文件A", 150), "b": ("文件B", 150)}.items():
-        tree.heading(c, text=t)
-        tree.column(c, width=w, anchor="w")
-    for row in app["result_rows"]:
-        st = row["status"]
-        tag = "ok" if st == "一致" else "bad"
-        tree.insert("", "end", values=(row["item"], st, row["a_pages"] or row["a"],
-                                       row["b_pages"] or row["b"]), tags=(tag,))
-    var_status.set(f"对比完成：一致 {len(app['stats']['common'])}，仅A有 {oa}，仅B有 {ob}")
+    mode = app.get("stats", {}).get("mode", "set")
+    if mode == "pdf2excel":
+        tree["columns"] = ("item", "status", "valueA", "footA", "near")
+        for c, (t, w) in {"item": ("PDF位号", 100), "status": ("核对结果", 130),
+                          "valueA": ("Excel值(Value)", 130), "footA": ("Excel封装(Footprint)", 160),
+                          "near": ("PDF附近标注", 340)}.items():
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        for row in app["result_rows"]:
+            st = row["status"]
+            tag = "ok" if st == "一致" else "bad"
+            tree.insert("", "end",
+                        values=(row["item"], st, row["valueA"], row["footA"], row["near"]),
+                        tags=(tag,))
+        n_ok = app.get("stats", {}).get("all", {}).get("值疑似一致", 0)
+        n_may = app.get("stats", {}).get("all", {}).get("值疑似不一致/待确认", 0)
+        n_miss = app.get("stats", {}).get("all", {}).get("PDF有Excel无", 0)
+        var_status.set(f"器件核对完成：值一致 {n_ok}，待确认 {n_may}，PDF有Excel无 {n_miss}")
+        messagebox.showinfo("器件核对完成",
+                            f"值疑似一致: {n_ok}\n值疑似不一致/待确认: {n_may}\nPDF有Excel无: {n_miss}",
+                            parent=root)
+        return
+    if mode == "detail":
+        # 逐位号：列= 位号 | 结果 | 不一致字段详情
+        tree["columns"] = ("item", "status", "fields")
+        for c, (t, w) in {"item": ("位号(主键)", 120), "status": ("结果", 110),
+                          "fields": ("字段差异(字段A→B)", 460)}.items():
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        for row in app["result_rows"]:
+            st = row["status"]
+            tag = "ok" if st == "一致" else "bad"
+            if row["field_diffs"]:
+                desc = "；".join("%s: %s → %s" % (d["field"], d["a"] or "空", d["b"] or "空")
+                                 for d in row["field_diffs"])
+            else:
+                desc = ""
+            tree.insert("", "end", values=(row["item"], st, desc), tags=(tag,))
+    elif mode == "group":
+        # 按物料分组：列= 分组 | 结果 | 数量A | 数量B
+        tree["columns"] = ("item", "status", "qa", "qb")
+        for c, (t, w) in {"item": ("物料分组(Value | MPN)", 300), "status": ("结果", 110),
+                          "qa": ("数量A", 60), "qb": ("数量B", 60)}.items():
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        for row in app["result_rows"]:
+            st = row["status"]
+            tag = "ok" if st == "一致" else "bad"
+            tree.insert("", "end", values=(row["item"], st, row["qty_a"], row["qty_b"]),
+                        tags=(tag,))
+    else:
+        tree["columns"] = ("item", "status", "a", "b")
+        for c, (t, w) in {"item": ("器件/位号", 130), "status": ("结果", 90),
+                          "a": ("文件A", 150), "b": ("文件B", 150)}.items():
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        for row in app["result_rows"]:
+            st = row["status"]
+            tag = "ok" if st == "一致" else "bad"
+            tree.insert("", "end", values=(row["item"], st, row["a_pages"] or row["a"],
+                                           row["b_pages"] or row["b"]), tags=(tag,))
+    n_common = len(app.get("stats", {}).get("common", []))
+    var_status.set(f"对比完成：一致 {n_common}，仅A有 {oa}，仅B有 {ob}")
     total = len(app["result_rows"])
     messagebox.showinfo("对比完成",
-                        f"共 {total} 项\n 一致: {len(app['stats']['common'])}\n"
-                        f" 仅A有: {oa}  仅B有: {ob}",
+                        f"共 {total} 项\n 一致: {n_common}\n 仅A有: {oa}  仅B有: {ob}",
                         parent=root)
 
 
@@ -1842,7 +2296,6 @@ def main():
     parser.add_argument("--out", type=str, default=None, help="报告输出目录(默认=A所在目录)")
     args = parser.parse_args()
 
-    _check = False
     if args.compare:
         code = run_cli(args.a, args.pdf, args.col, args.match, args.out, args.b, args.compare)
         sys.exit(code)
