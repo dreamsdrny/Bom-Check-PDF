@@ -51,9 +51,9 @@ def _build_code2glyph(fonts):
         f = fonts[fn]   # 获取字体对象
         enc = f.get("/Encoding") #字体的编码信息
         diffs = None    # 初始化数据
-        if enc is not None and hasattr(enc, "get"):
-            diffs = enc.get("/Differences", None)
-        if diffs is None:
+        if enc is not None and hasattr(enc, "get"): # 如果存在get 获取数组
+            diffs = enc.get("/Differences", None)  
+        if diffs is None:  # 数组为空 跳过
             continue
         try:
             arr = [str(x) for x in diffs]
@@ -206,12 +206,12 @@ def decode_pdf_blocks(pdf_path):
     return pages_words, pages_text, page_count
 
 
-def _get_char_boxes(pdf_path, pageno):
+def _get_char_boxes(pdf_path, pageno):   #传页路径，传页参数
     try:
         with pdfplumber.open(pdf_path) as p:
             return [
-                (c["x0"], c["top"], c["x1"], c["bottom"])
-                for c in p.pages[pageno].chars
+                (c["x0"], c["top"], c["x1"], c["bottom"])  #提取四个坐标，x0(左)、top(上)、x1(右)、bottom(下)
+                for c in p.pages[pageno].chars # 获取指定页码的字符信息
             ]
     except Exception:
         return None

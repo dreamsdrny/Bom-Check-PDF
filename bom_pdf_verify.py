@@ -46,59 +46,59 @@ PREFIXES_PARTS = set("CRLUDQJRTFXSWYKT")
 
 def _build_code2glyph(fonts):
     """把 Type3 字体的 Differences 数组解析成 {字符码: 字形名}。"""
-    code2glyph = {}
-    for fn in fonts.keys():
-        f = fonts[fn]
-        enc = f.get("/Encoding")
-        diffs = None
-        if enc is not None and hasattr(enc, "get"):
+    code2glyph = {} # 定义字典，
+    for fn in fonts.keys(): # fn 为字体字符串，fonts[fn] 为字体对象  
+        f = fonts[fn]   # 赋值
+        enc = f.get("/Encoding") # 获取字体编码对象
+        diffs = None #数组为空
+        if enc is not None and hasattr(enc, "get"):  #
             diffs = enc.get("/Differences", None)
         if diffs is None:
             continue
-        try:
-            arr = [str(x) for x in diffs]
-        except Exception:
+        try:  # 将diffs中的每个元素转换为字符串，并存储在arr列表中
+            arr = [str(x) for x in diffs]  # 数组转换
+        except Exception: 
             continue
-        gmap = {}
+        gmap = {} # 定义字典 gmap
         start = None
-        names = []
+        names = [] # 列表 names 名称
 
-        def flush():
-            nonlocal gmap, start, names
+        def flush():  # 定义函数
+            nonlocal gmap, start, names #循环，将start和names中的元素添加到gmap字典中
             if start is None:
                 return
             cur = start
             for g in names:
                 gmap[cur] = g
                 cur += 1
-            start = None
+            start = None  # 处理完成，进行重置
             names = []
 
-        for x in arr:
-            if re.fullmatch(r"-?\d+", x):
-                flush()
-                start = int(x)
+        for x in arr: 
+            if re.fullmatch(r"-?\d+", x): # 正则表达式，判断元素是否整数（正负数字字符串）
+                flush() #调用函数
+                start = int(x) 
             else:
                 names.append(x)
-        flush()
+        flush() #调用，避免数组
         code2glyph[str(fn)] = gmap
     return code2glyph
 
 
-def decode_page(pdf, pageno):
+def decode_page(pdf, pageno): 
     """完整解码一页：返回[(字符, x, y, 字号)]，自原点为页面左上，y 越上越小。"""
-    from pikepdf import parse_content_stream
+    from pikepdf import parse_content_stream #库pikepdf中的函数parse_content_stream，解析PDF内容流
 
-    page = pdf.pages[pageno]
-    c2g = _build_code2glyph(page["/Resources"]["/Font"])
+    page = pdf.pages[pageno]  # 获取指定页码的页面对象
+    c2g = _build_code2glyph(page["/Resources"]["/Font"])  #`c2g` = code‑to‑glyph：**字体名称 → {字节编码：字形名}**
     ops = list(parse_content_stream(page.Contents))
-    tm = [1, 0, 0, 1, 0, 0]
-    tl = 0.0
-    cur_font = None
-    cur_size = 1.0
-    out = []
+    tm = [1, 0, 0, 1, 0, 0]  #状态变量
+    tl = 0.0 #原点00
+    cur_font = None #当前字体，默认不使用
+    cur_size = 1.0  #缩放系数默认1.0
+    out = [] #输出列表，存放解析之后提出的文本内容
     for op in ops:
-        name = str(op.operator)
+        name = str(op.operator) 
         ops_ = list(op.operands)
         if name == "BT":
             tm = [1, 0, 0, 1, 0, 0]
@@ -141,6 +141,8 @@ def _append_char(out, gmap, byte, tm, cur_size):
     ch = chr(num + 29) if num is not None and 0 < num + 29 <= 0x10FFFF else "?"
     out.append((ch, tm[4], tm[5], cur_size))
 
+# 根据传入的字节值（byte）在字形映射表（gmap）中查找对应的字形名称，解析出字形编号，
+# 并将其转换为实际的字符，最后将该字符连同坐标与字号信息一起存入输出列表中。
 
 def decode_pdf_blocks(pdf_path):
     """解码 PDF 全部页面，返回页面文字行(列表) 与 全部字符。
@@ -237,7 +239,7 @@ def build_pdf_designator_annotations(pages_words):
     """
     tokens, _ = extract_designators(pages_words)
     # 每页的所有词
-    page_words = {}
+    page_words = {} # 
     for pno, pwords in pages_words.items():
         plist = []
         for y, words in pwords:
