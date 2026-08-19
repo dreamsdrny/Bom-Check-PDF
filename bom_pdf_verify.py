@@ -2,13 +2,15 @@
 BOM(Excel) 与 PDF 原理图 逐器件核对工具
 ========================================
 功能：
-  1. 读取 870-000837_REV_A.BOM.xlsx 的任意列
+  1. 读取excel的任意列
   2. 精确解码 PDF 原理图文字（原理图的字体使用"字形编号+29=ASCII码"的自定义编码，
      需从内容流中还原，OCR 无法保证完整识别）
   3. 二者一一核对：一致(绿)/不一致(红) 全部列出
   4. 生成 Excel 报告(.xlsx) 与文本报告(.txt)
 
-适用：PAT - 本项目仅针对该系列 PDF(SEYOND/SIPR 原理图导出格式)。
+    author : 乔金成
+    Time : 2026-08-19
+适用：PAT - 本项目仅针对该系列 PDF(原理图导出格式)。
 """
 
 import os  
@@ -540,7 +542,10 @@ _MPN_COL_KEYS = ("mpn", "manufacturer part number", "manufacturer pn", "mfr pn",
                  "料号", "型号")
 _MFG_COL_KEYS = ("manufacturer", "manufacture", "mfg", "vendor", "厂家", "供应商", "厂商")
 _QTY_COL_KEYS = ("quantity", "qty", "数量", "pcs")
-_REF_COL_KEYS = ("reference", "refdes", "designator", "refs", "位号", "ref", "references")
+_REF_COL_KEYS = ("reference", "refdes", "designator", "refs", "位号", "ref", "references",
+                 "reference designator")
+_ITM_COL_KEYS = ("item number", "part number", "part no", "item no", "ipn", "零件号", "料号")
+_DESC_COL_KEYS = ("item name", "description", "desc", "part", "value", "名称", "描述", "spec")
 
 
 def _find_col(headers, keys):
@@ -1166,7 +1171,7 @@ def normalize_cap_value(s):
     m = re.match(r"^([\d.]+)([a-z\u00b5\u03bc]*)$", s)
     if not m:
         return s
-    num, unit = m.groups()
+    num, unit = m.groups()  # 提取数字和单位
     # 数字在前、代号在后的解析
     try:
         val = float(num)
@@ -1320,14 +1325,20 @@ def compare_excel_excel_mpn(path_a, path_b, key_a=None, key_b=None, qty_a=None, 
     rb = _find_col(hb, _REF_COL_KEYS)                  # 文件B 位号列
     fa = _find_col(ha, _MFG_COL_KEYS)                  # 文件A 厂商列
     fb = _find_col(hb, _MFG_COL_KEYS)                  # 文件B 厂商列
+    ia_ = _find_col(ha, _ITM_COL_KEYS)                 # 文件A 料号页号列(ITEM NUMBER)
+    ib_ = _find_col(hb, _ITM_COL_KEYS)                 # 文件B 料号页号列
+    da_ = _find_col(ha, _DESC_COL_KEYS)                # 文件A 描述列(ITEM NAME)
+    db_ = _find_col(hb, _DESC_COL_KEYS)                # 文件B 描述列
     if not ma or not mb:
         raise RuntimeError("文件A/文件B 中找不到主键列（%s / %s）" % (ma, mb))
 
-    def build(headers, data, mcol_list, qcol, refcol, mfgcol):
+    def build(headers, data, mcol_list, qcol, refcol, mfgcol, itmcol, desccol):
         mi = [headers.index(m) for m in mcol_list]
         qi = headers.index(qcol) if qcol in headers else None
         ri = headers.index(refcol) if refcol in headers else None
         fi = headers.index(mfgcol) if mfgcol in headers else None
+        ii = headers.index(itmcol) if itmcol in headers else None
+        di = headers.index(desccol) if desccol in headers else None
         idx = {}
         for row in data:
             pk = tuple(str(row["values"][i] or "").strip().upper() for i in mi)
@@ -1337,6 +1348,8 @@ def compare_excel_excel_mpn(path_a, path_b, key_a=None, key_b=None, qty_a=None, 
                 "row": row, "qty": (row["values"][qi] if qi is not None else "") or "",
                 "refs": split_designators_text(row["values"][ri]) if ri is not None else [],
                 "mfg": (row["values"][fi] if fi is not None else "") or "",
+                "itm": (row["values"][ii] if ii is not None else "") or "",
+                "desc": (row["values"][di] if di is not None else "") or "",
             })
         return idx
 
@@ -1346,8 +1359,8 @@ def compare_excel_excel_mpn(path_a, path_b, key_a=None, key_b=None, qty_a=None, 
             return str(pk[0])
         return " | ".join("%s=%s" % (m, str(v)) for m, v in zip(mcol_list, pk) if v)
 
-    ia = build(ha, da, ma, qa, ra, fa)
-    ib = build(hb, db, mb, qb, rb, fb)
+    ia = build(ha, da, ma, qa, ra, fa, ia_, da_)
+    ib = build(hb, db, mb, qb, rb, fb, ib_, db_)
     keys = sorted(set(ia.keys()) | set(ib.keys()), key=lambda k: tuple(k))
 
     rows = []
@@ -1404,6 +1417,8 @@ def compare_excel_excel_mpn(path_a, path_b, key_a=None, key_b=None, qty_a=None, 
             "仅文件A有": n_only_a,
             "仅文件B有": n_only_b,
         },
+        "file_a": path_a,
+        "file_b": path_b,
         "bad": [{"designator": r["item"], "row": ""} for r in rows if r["status"] != "一致"],
         "extra": [r["item"] for r in rows if r["status"] == "仅文件B"],
         "in_bom": {r["item"] for r in rows if r["status"] != "仅文件B"},
@@ -1559,16 +1574,19 @@ def compare_pdf_pdf(path_a, path_b):
 
 
 # ---------- 报告生成 --------------------------------
-def gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir):
+def gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir, formats=None):
+    """生成报告。formats 为导出类型集合，可选 {"xlsx","docx","pdf","txt"}；None=全部。"""
+    if formats is None:
+        formats = {"xlsx", "docx", "pdf", "txt"}
+    else:
+        formats = set(formats)
     ts = time.strftime("%Y%m%d_%H%M%S")
     # 根据 row 结构自动识别模式：对比模式 rows 含 "item"/"status" 且无 "designators"
     is_compare = bool(rows) and "designators" not in rows[0]
-    if is_compare:
-        xlsx_path = os.path.join(out_dir, f"对比报告_{ts}.xlsx")
-        txt_path = os.path.join(out_dir, f"对比报告_{ts}.txt")
-    else:
-        xlsx_path = os.path.join(out_dir, f"BOM核对报告_{ts}.xlsx")
-        txt_path = os.path.join(out_dir, f"BOM核对报告_{ts}.txt")
+    prefix = "对比报告" if is_compare else "BOM核对报告"
+    xlsx_path = os.path.join(out_dir, f"{prefix}_{ts}.xlsx")
+    txt_path = os.path.join(out_dir, f"{prefix}_{ts}.txt")
+    docx_path = os.path.join(out_dir, f"{prefix}_{ts}.docx")
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1660,93 +1678,109 @@ def gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir):
         for t in sorted(pdf_tokens.keys(),
                         key=lambda s: (s[0], int(re.search(r"\d+", s).group()) if re.search(r"\d+", s) else 0)):
             ws3.append([t, ",".join(str(p) for p in pdf_tokens[t]), "是" if t in in_bom else "否"])
-    wb.save(xlsx_path)
+    if "xlsx" in formats:
+        wb.save(xlsx_path)
+    else:
+        xlsx_path = None
 
     # txt 报告
-    with open(txt_path, "w", encoding="utf-8") as f:
-        f.write("=" * 70 + "\n")
-        if is_compare:
-            f.write("文件对比报告（Excel-Excel / Excel-PDF / PDF-PDF）\n")
-        else:
-            f.write("BOM 与 PDF 原理图 器件核对报告\n")
-        f.write("来源: %s\n" % bom_path)
-        f.write("时间: %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
-        f.write("=" * 70 + "\n\n")
-        f.write("【汇总】\n")
-        for k, v in stats["all"].items():
-            f.write("  %-30s: %s\n" % (k, v))
-        if is_compare:
-            mode = stats.get("mode", "set")
-            if mode == "mpn":
-                f.write("\n【MPN 对比明细】\n")
-                for row in rows:
-                    f.write("  [%s] %s  厂商=%s  数量 Excel=%s / PDF=%s\n"
-                            % (row["status"], row["item"], row["mfg"], row["qty_a"], row["qty_b"]))
-                    f.write("        Excel位号: %s\n" % row["refs_a"])
-                    f.write("        PDF位号 : %s\n" % row["refs_b"])
-                    for mm in row.get("mismatchs", []):
-                        f.write("        差异: %s\n" % mm)
-                f.write("\n【PDF有而Excel无】\n")
-                for e in sorted(stats["extra"]):
-                    f.write("  %s\n" % e)
-            elif mode == "excelmpn":
-                f.write("\n【Excel MPN 对比明细】\n")
-                for row in rows:
-                    ra = row.get("rec_a") or {}
-                    rb = row.get("rec_b") or {}
-                    f.write("  [%s] %s\n" % (row["status"], row["item"]))
-                    f.write("        数量: A=%s  B=%s\n" % (ra.get("qty", ""), rb.get("qty", "")))
-                    f.write("        位号: A=%s\n                B=%s\n"
-                            % (",".join(ra.get("refs", [])), ",".join(rb.get("refs", []))))
-                    f.write("        厂商: A=%s  B=%s\n" % (ra.get("mfg", ""), rb.get("mfg", "")))
-                    for d in row["field_diffs"]:
-                        f.write("        差异[%s]: %s → %s\n" % (d["field"], d["a"] or "(空)", d["b"] or "(空)"))
-                f.write("\n【仅文件A有】\n")
-                for b in stats["bad"]:
-                    f.write("  %s\n" % b["designator"])
-                f.write("\n【仅文件B有】\n")
-                for e in sorted(stats["extra"]):
-                    f.write("  %s\n" % e)
-            elif mode == "pdf2excel":
-                f.write("\n【疑似不一致 / 待确认】\n")
-                for b in stats["bad"]:
-                    f.write("  %s\n" % b["designator"])
-                f.write("\n【PDF有Excel无】\n")
-                for t in sorted(stats["extra"]):
-                    f.write("  %s\n" % t)
-                f.write("\n【明细】\n")
-                for row in rows:
-                    f.write("  [%s] %s  Excel值=%s 封装=%s  附近标注=%s\n"
-                            % (row["status"], row["item"], row["valueA"], row["footA"], row["near"]))
+    if "txt" in formats:
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write("=" * 70 + "\n")
+            if is_compare:
+                f.write("文件对比报告（Excel-Excel / Excel-PDF / PDF-PDF）\n")
             else:
-                f.write("\n【仅文件A有】\n")
+                f.write("BOM 与 PDF 原理图 器件核对报告\n")
+            f.write("来源: %s\n" % bom_path)
+            f.write("时间: %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            f.write("=" * 70 + "\n\n")
+            f.write("【汇总】\n")
+            for k, v in stats["all"].items():
+                f.write("  %-30s: %s\n" % (k, v))
+            if is_compare:
+                mode = stats.get("mode", "set")
+                if mode == "mpn":
+                    f.write("\n【MPN 对比明细】\n")
+                    for row in rows:
+                        f.write("  [%s] %s  厂商=%s  数量 Excel=%s / PDF=%s\n"
+                                % (row["status"], row["item"], row["mfg"], row["qty_a"], row["qty_b"]))
+                        f.write("        Excel位号: %s\n" % row["refs_a"])
+                        f.write("        PDF位号 : %s\n" % row["refs_b"])
+                        for mm in row.get("mismatchs", []):
+                            f.write("        差异: %s\n" % mm)
+                    f.write("\n【PDF有而Excel无】\n")
+                    for e in sorted(stats["extra"]):
+                        f.write("  %s\n" % e)
+                elif mode == "excelmpn":
+                    f.write("\n【Excel MPN 对比明细】\n")
+                    for row in rows:
+                        ra = row.get("rec_a") or {}
+                        rb = row.get("rec_b") or {}
+                        f.write("  [%s] %s\n" % (row["status"], row["item"]))
+                        f.write("        数量: A=%s  B=%s\n" % (ra.get("qty", ""), rb.get("qty", "")))
+                        f.write("        位号: A=%s\n                B=%s\n"
+                                % (",".join(ra.get("refs", [])), ",".join(rb.get("refs", []))))
+                        f.write("        厂商: A=%s  B=%s\n" % (ra.get("mfg", ""), rb.get("mfg", "")))
+                        for d in row["field_diffs"]:
+                            f.write("        差异[%s]: %s → %s\n" % (d["field"], d["a"] or "(空)", d["b"] or "(空)"))
+                    f.write("\n【仅文件A有】\n")
+                    for b in stats["bad"]:
+                        f.write("  %s\n" % b["designator"])
+                    f.write("\n【仅文件B有】\n")
+                    for e in sorted(stats["extra"]):
+                        f.write("  %s\n" % e)
+                elif mode == "pdf2excel":
+                    f.write("\n【疑似不一致 / 待确认】\n")
+                    for b in stats["bad"]:
+                        f.write("  %s\n" % b["designator"])
+                    f.write("\n【PDF有Excel无】\n")
+                    for t in sorted(stats["extra"]):
+                        f.write("  %s\n" % t)
+                    f.write("\n【明细】\n")
+                    for row in rows:
+                        f.write("  [%s] %s  Excel值=%s 封装=%s  附近标注=%s\n"
+                                % (row["status"], row["item"], row["valueA"], row["footA"], row["near"]))
+                else:
+                    f.write("\n【仅文件A有】\n")
+                    for b in stats["bad"]:
+                        f.write("  %s\n" % b["designator"])
+                    f.write("\n【仅文件B有】\n")
+                    for t in sorted(stats["extra"]):
+                        f.write("  %s\n" % t)
+                    f.write("\n【明细】\n")
+                    for row in rows:
+                        f.write("  %-6s | %-10s | A:%s | B:%s\n"
+                                % (row["status"], row["item"], row["a_pages"] or row["a"],
+                                   row["b_pages"] or row["b"]))
+            else:
+                f.write("\n【不一致 - BOM位号在PDF中未找到】\n")
                 for b in stats["bad"]:
-                    f.write("  %s\n" % b["designator"])
-                f.write("\n【仅文件B有】\n")
+                    f.write("  %s  (BOM第%d行)\n" % (b["designator"], b["row"]))
+                f.write("\n【PDF中出现但不在BOM的位号】\n")
                 for t in sorted(stats["extra"]):
-                    f.write("  %s\n" % t)
+                    f.write("  %s  页码:%s\n" % (t, ",".join(str(p) for p in pdf_tokens[t])))
                 f.write("\n【明细】\n")
                 for row in rows:
-                    f.write("  %-6s | %-10s | A:%s | B:%s\n"
-                            % (row["status"], row["item"], row["a_pages"] or row["a"],
-                               row["b_pages"] or row["b"]))
-        else:
-            f.write("\n【不一致 - BOM位号在PDF中未找到】\n")
-            for b in stats["bad"]:
-                f.write("  %s  (BOM第%d行)\n" % (b["designator"], b["row"]))
-            f.write("\n【PDF中出现但不在BOM的位号】\n")
-            for t in sorted(stats["extra"]):
-                f.write("  %s  页码:%s\n" % (t, ",".join(str(p) for p in pdf_tokens[t])))
-            f.write("\n【明细】\n")
-            for row in rows:
-                for d in row["designators"]:
-                    mark = "OK " if d["found"] else "MISS"
-                    f.write(
-                        "%s | 行%-3d | %-6s | %-10s | %s\n"
-                        % (mark, row["header_row"], row["col_name"], d["designator"], row["raw"])
-                    )
-    _export_html_report(txt_path, stats, rows, is_compare, pdf_tokens)
-    return xlsx_path, txt_path
+                    for d in row["designators"]:
+                        mark = "OK " if d["found"] else "MISS"
+                        f.write(
+                            "%s | 行%-3d | %-6s | %-10s | %s\n"
+                            % (mark, row["header_row"], row["col_name"], d["designator"], row["raw"])
+                        )
+    else:
+        txt_path = None
+
+    if "txt" in formats:
+        _export_html_report(txt_path, stats, rows, is_compare, pdf_tokens)
+    # 生成 Arena 风格 PDF 对比报告（仅 Excel-Excel / MPN 模式）
+    if "pdf" in formats:
+        base = os.path.splitext(os.path.basename(
+            txt_path or xlsx_path or docx_path or "rep_%s" % ts))[0]
+        _export_pdf_report(out_dir, base, rows, stats,
+                           stats.get("file_a") or bom_path, stats.get("file_b") or "")
+    if "docx" in formats:
+        _export_word_report(docx_path, rows, stats, is_compare)
+    return xlsx_path, txt_path, docx_path
 
 
 def _esc_html(s):
@@ -1858,6 +1892,221 @@ def _export_html_report(txt_path, stats, rows, is_compare, pdf_tokens):
             f.write("</body></html>")
     except Exception:
         pass
+
+
+# ---------- PDF 对比报告（仿 Arena "BOM Compare" 样式） ----------------
+def _export_pdf_report(out_dir, base_name, rows, stats, path_a, path_b):
+    """生成与 835&685对比.pdf 同风格的 PDF 对比报告。
+    布局：A3 横向、表头 # / ITEM NUMBER / ITEM NAME / PCS / REF DES / SUBSTITUTES，
+    已使用/未使用(差异)器件用红色标记(0.6,0,0)加 '>>' 前缀。"""
+    pdf_path = os.path.join(out_dir, base_name + ".pdf")
+    try:
+        import pymupdf
+    except ImportError:
+        return None
+    mode = stats.get("mode", "set") if stats else "set"
+    if mode not in ("excelmpn", "mpn"):
+        return None
+
+    # 页面尺寸 A3 横向（与参考文档一致的点数）
+    page_w, page_h = 1191.0, 842.0
+    RED = (0.6, 0, 0)           # 0x990000
+    BLACK = (0, 0, 0)
+    BODY = "helv"               # 笔画字体（参考文档为 SegoeUI，这里用内建 sans-serif 近似）
+    BOLD = "hebo"
+    ITAL = "hebi"
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=page_w, height=page_h)
+
+    def _p(x, y, text, size=8, font=BODY, color=BLACK):
+        page.insert_text((x, y), text, fontsize=size, fontname=font, color=color)
+
+    # ---- 顶部页眉（仿参考文档） ----
+    _p(34, 55, "Seyond Inc.", 11.2, BOLD)
+    _p(34, 68, "Seyond Production", 9, BOLD)
+    _p(34, 80, "Printed by", 6, BOLD)
+    _p(34, 90, "Printed on %s" % time.strftime("%m/%d/%Y"), 6, BOLD)
+    _p(34, 100, "Local time zone (GMT+08:00) China Standard Time", 6, BOLD)
+    _p(34, 112, "Page  >  Bill of Materials  >  Compare", 8)
+    _p(34, 121, "All information contained in this document is proprietary and confidential.",
+       6, ITAL, (0, 0.067, 0.09))
+
+    # ---- 文件标题（两个 BOM 版本） ----
+    name_a = os.path.basename(path_a or "")
+    name_b = os.path.basename(path_b or "")
+    _p(50, 145, name_a, 13.5, BOLD)
+    _p(50, 163, "Rev A1", 8)
+    _p(680, 145, name_b, 13.5, BOLD)
+    _p(680, 163, "Rev A1", 8)
+
+    # ---- 表头 ----
+    y0 = 251.0
+    _p(35, y0, ">>", 8, BODY, RED)
+    _p(48, y0, "#", 8, BOLD)
+    _p(115, y0, "ITEM NUMBER", 8, BOLD)
+    _p(284, y0, "ITEM NAME", 8, BOLD)
+    _p(647, y0 - 4, "PCS", 7.5, BOLD)
+    _p(743, y0, "REF DES", 8, BOLD)
+    _p(1103, y0, "SUBSTITUTES", 8, BOLD)
+
+    page.draw_line(pymupdf.Point(30, y0 + 6), pymupdf.Point(1165, y0 + 6), color=(0.8, 0.8, 0.8), width=0.6)
+
+    # ---- 数据行 ----
+    row_h = 15.0
+    y = y0 + 16
+    n = 0
+    for row in rows:
+        if y > page_h - 40:
+            page = doc.new_page(width=page_w, height=page_h)
+            y = 40
+        n += 1
+        status = row.get("status", "")
+        changed = status != "一致"
+        ra = row.get("rec_a") or {}
+        rb = row.get("rec_b") or {}
+        c = RED if changed else BLACK
+        if changed:
+            _p(35, y, ">>", 8, BOLD, RED)
+        _p(48, y, "%02d" % n, 8, BODY, c)
+        # ITEM NUMBER（显示料号/IPN，优先 item 字段）
+        itm_a = str(ra.get("itm") or "") or str(row.get("item"))
+        _p(115, y, _clip(itm_a, 34), 8, BODY, c)
+        # ITEM NAME（描述）
+        _p(284, y, _clip(str(ra.get("desc") or ""), 70), 8, BODY, c)
+        # PCS 数量
+        qa = str(ra.get("qty") or "")
+        _p(647, y, ("PCS%s" % qa) if qa else "PCS", 8, BODY, c)
+        # REF DES 位号
+        refs = ra.get("refs") or []
+        _p(743, y, _clip(",".join(refs), 55), 8, BODY, c)
+        # SUBSTITUTES（差异简述）
+        if status == "仅文件A":
+            sub = "仅文件A(文件B无此料号)"
+        elif status == "仅文件B":
+            sub = "仅文件B(文件A无此料号)"
+        elif row.get("field_diffs"):
+            sub = "；".join("%s: %s→%s" % (d["field"], d["a"] or "空", d["b"] or "空")
+                            for d in row["field_diffs"])[:60]
+        else:
+            sub = ""
+        _p(1103, y, _clip(sub, 45), 8, BODY, RED if sub else BLACK)
+        y += row_h
+
+    doc.save(pdf_path)
+    doc.close()
+    return pdf_path
+
+
+def _clip(s, n):
+    s = str(s or "")
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _export_word_report(docx_path, rows, stats, is_compare):
+    """生成 Word(.docx) 报告，已使用/未使用/差异器件红色标记。"""
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.oxml.ns import qn
+    except ImportError:
+        return None
+
+    def _set_font(run, size=10, bold=False, color=None):
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        if color is not None:
+            run.font.color.rgb = RGBColor(*color)
+        run.font.name = "Microsoft YaHei"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+
+    doc = Document()
+    doc.add_heading("BOM 核对 / 对比报告", level=0)
+    p = doc.add_paragraph()
+    _set_font(p.add_run("生成时间: %s" % time.strftime("%Y-%m-%d %H:%M:%S")), size=9)
+
+    doc.add_heading("汇总", level=1)
+    t = doc.add_table(rows=1, cols=2)
+    t.style = "Table Grid"
+    for c, txt in zip(t.rows[0].cells, ("统计项", "数量")):
+        _set_font(c.paragraphs[0].add_run(txt), size=10, bold=True)
+    for k, v in stats.get("all", {}).items():
+        row = t.add_row().cells
+        _set_font(row[0].paragraphs[0].add_run(str(k)), size=9)
+        _set_font(row[1].paragraphs[0].add_run(str(v)), size=9)
+
+    mode = stats.get("mode", "set")
+    if is_compare and mode == "excelmpn":
+        doc.add_heading("Excel MPN 对比明细", level=1)
+        headers = ["MPN(物料号)", "结果", "数量A", "数量B", "位号A", "位号B", "厂商A", "厂商B", "差异明细"]
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = "Table Grid"
+        for c, txt in zip(table.rows[0].cells, headers):
+            _set_font(c.paragraphs[0].add_run(txt), size=9, bold=True)
+        RED = (0x9C, 0x00, 0x06)
+        for row in rows:
+            changed = row.get("status") != "一致"
+            ra = row.get("rec_a") or {}
+            rb = row.get("rec_b") or {}
+            desc = "；".join("%s: %s→%s" % (d["field"], d["a"] or "空", d["b"] or "空")
+                             for d in row["field_diffs"])
+            cells = table.add_row().cells
+            vals = [row["item"], row["status"], ra.get("qty", ""), rb.get("qty", ""),
+                    ",".join(ra.get("refs", [])), ",".join(rb.get("refs", [])),
+                    ra.get("mfg", ""), rb.get("mfg", ""), desc]
+            for c, v in zip(cells, vals):
+                _set_font(c.paragraphs[0].add_run(str(v)), size=9, color=(RED if changed else None))
+    elif is_compare and mode == "mpn":
+        doc.add_heading("MPN 对比明细", level=1)
+        headers = ["MPN(料号)", "结果", "Excel数量", "PDF数量", "Excel位号", "PDF位号", "厂商", "PDF页"]
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = "Table Grid"
+        for c, txt in zip(table.rows[0].cells, headers):
+            _set_font(c.paragraphs[0].add_run(txt), size=9, bold=True)
+        RED = (0x9C, 0x00, 0x06)
+        for row in rows:
+            changed = row.get("status") != "一致"
+            cells = table.add_row().cells
+            vals = [row.get("item", ""), row.get("status", ""), row.get("qty_a", ""),
+                    row.get("qty_b", ""), row.get("refs_a", ""), row.get("refs_b", ""),
+                    row.get("mfg", ""), row.get("pages", "")]
+            for c, v in zip(cells, vals):
+                _set_font(c.paragraphs[0].add_run(str(v)), size=9, color=(RED if changed else None))
+    elif is_compare:
+        doc.add_heading("对比明细", level=1)
+        headers = ["器件/位号", "结果", "文件A", "文件B"]
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = "Table Grid"
+        for c, txt in zip(table.rows[0].cells, headers):
+            _set_font(c.paragraphs[0].add_run(txt), size=9, bold=True)
+        RED = (0x9C, 0x00, 0x06)
+        for row in rows:
+            changed = row.get("status") != "一致"
+            cells = table.add_row().cells
+            vals = [row.get("item", ""), row.get("status", ""),
+                    row.get("a_pages") or row.get("a", ""), row.get("b_pages") or row.get("b", "")]
+            for c, v in zip(cells, vals):
+                _set_font(c.paragraphs[0].add_run(str(v)), size=9, color=(RED if changed else None))
+    else:
+        doc.add_heading("核对明细", level=1)
+        headers = ["BOM行号", "列", "原值", "位号/值", "PDF中存在", "所在页码", "结果"]
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = "Table Grid"
+        for c, txt in zip(table.rows[0].cells, headers):
+            _set_font(c.paragraphs[0].add_run(txt), size=9, bold=True)
+        RED = (0x9C, 0x00, 0x06)
+        for row in rows:
+            for d in row.get("designators", []):
+                cells = table.add_row().cells
+                vals = [row["header_row"], row["col_name"], row["raw"], d["designator"],
+                        "是" if d["found"] else "否",
+                        ",".join(str(p) for p in d["pages"]) if d["found"] else "",
+                        "一致" if d["found"] else "不一致"]
+                for c, v in zip(cells, vals):
+                    _set_font(c.paragraphs[0].add_run(str(v)), size=9,
+                              color=(RED if not d["found"] else None))
+    doc.save(docx_path)
+    return docx_path
 
 
 # ============================================================
@@ -2575,6 +2824,21 @@ def _setting_rows(parent, lb_col, lb_mode, app, lb_xlsx, lb_pdf, lb_file_b, lb_c
     ttk.Button(r0, text="…", width=3, style="TButton",
                command=lambda: _pick_out_dir(app, var_out, root)).pack(side="left", padx=(4, 0))
 
+    # 导出文件类型选择：Excel / Word / PDF / TXT
+    rFmt = ttk.Frame(parent, style="Card.TFrame")
+    rFmt.pack(fill="x", pady=3)
+    ttk.Label(rFmt, text="导出类型", style="Sub.TLabel", width=11, anchor="w").pack(side="left")
+    default_fmt = app.get("export_formats") or ["xlsx", "docx", "pdf", "txt"]
+    var_xlsx = tk.BooleanVar(value="xlsx" in default_fmt)
+    var_docx = tk.BooleanVar(value="docx" in default_fmt)
+    var_pdf = tk.BooleanVar(value="pdf" in default_fmt)
+    var_txt = tk.BooleanVar(value="txt" in default_fmt)
+    ttk.Checkbutton(rFmt, text="Excel", variable=var_xlsx, style="TCheckbutton").pack(side="left", padx=(0, 6))
+    ttk.Checkbutton(rFmt, text="Word", variable=var_docx, style="TCheckbutton").pack(side="left", padx=(0, 6))
+    ttk.Checkbutton(rFmt, text="PDF", variable=var_pdf, style="TCheckbutton").pack(side="left", padx=(0, 6))
+    ttk.Checkbutton(rFmt, text="TXT", variable=var_txt, style="TCheckbutton").pack(side="left")
+    app["_fmt_vars"] = (var_xlsx, var_docx, var_pdf, var_txt)
+
     # 高级比对设置：手动选择是否展开
     rTop = ttk.Frame(parent, style="Card.TFrame")
     rTop.pack(fill="x", pady=(6, 2))
@@ -3130,10 +3394,31 @@ def _do_export(app, root, var_status):
             return
         _start_progress(app, root, "导出报告中")
         d = app.get("out_dir") or os.path.dirname(os.path.abspath(__file__))
-        xlsx_path, txt_path = gen_report(app["bom_path"], app["result_rows"], app["stats"],
-                                         app["pdf_tokens"], app["pdf_pages_text"], d)
+        fmt_vars = app.get("_fmt_vars")
+        if fmt_vars:
+            fmts = set()
+            for key, var in zip(("xlsx", "docx", "pdf", "txt"), fmt_vars):
+                if var.get():
+                    fmts.add(key)
+        else:
+            fmts = {"xlsx", "docx", "pdf", "txt"}
+        xlsx_path, txt_path, docx_path = gen_report(app["bom_path"], app["result_rows"], app["stats"],
+                                                    app["pdf_tokens"], app["pdf_pages_text"], d, fmts)
         _stop_progress(app, root, "完成")
-        msg = "报告已生成:\n%s\n%s" % (xlsx_path, txt_path)
+        # 生成消息（按选中类型罗列实际产出文件）
+        made = []
+        for var, p_ in (("xlsx", xlsx_path), ("txt", txt_path), ("docx", docx_path)):
+            if var in fmts and p_:
+                made.append(p_)
+        if "pdf" in fmts:
+            import glob as _g
+            base_pdf = (os.path.splitext(os.path.basename(xlsx_path or txt_path or docx_path or "r"))[0]
+                        + ".pdf")
+            cand = os.path.join(d, base_pdf)
+            if os.path.exists(cand):
+                made.append(cand)
+        msg = "报告已生成:\n" + "\n".join(made)
+        app["last_report_msg"] = msg
         root.after(0, lambda: (var_status.set(msg), messagebox.showinfo("完成", msg, parent=root)))
     except Exception as e:
         traceback.print_exc()
@@ -3172,10 +3457,30 @@ def _auto_load(app, lb_xlsx, lb_pdf, lb_col):
 #  命令行入口（GUI / 命令行核对 / 帮助 三模式）
 # ============================================================
 def run_cli(bom_path=None, pdf_path=None, col_name="Part Reference", mode="位号核对(推荐)",
-            out_dir=None, file_b=None, ctype=None):
+            out_dir=None, file_b=None, ctype=None, formats=None):
     """命令行核对/对比模式：无需图形界面即可输出结果并生成报告。
     ctype: Excel vs Excel / Excel vs PDF / PDF vs PDF
+    formats: {"xlsx","docx","pdf","txt"} 子集，None=全部
     """
+    if formats is None:
+        formats = {"xlsx", "docx", "pdf", "txt"}
+    else:
+        formats = set(formats)
+
+    def _print_paths(xlsx_path, txt_path, docx_path):
+        print("报告已生成:")
+        if "xlsx" in formats and xlsx_path:
+            print("   %s" % xlsx_path)
+        if "txt" in formats and txt_path:
+            print("   %s" % txt_path)
+        if "docx" in formats and docx_path:
+            print("   %s" % docx_path)
+        if "pdf" in formats:
+            base = os.path.splitext(os.path.basename(xlsx_path or txt_path or docx_path))[0]
+            p = os.path.join(out_dir, base + ".pdf") if out_dir and base else None
+            if p and os.path.exists(p):
+                print("   %s" % p)
+
     # 方案三：Excel vs Excel（MPN 主键）
     if ctype == "Excel vs Excel":
         if not bom_path or not file_b:
@@ -3193,10 +3498,8 @@ def run_cli(bom_path=None, pdf_path=None, col_name="Part Reference", mode="位�
         print("[3/3] 生成报告...")
         if not out_dir:
             out_dir = os.path.dirname(os.path.abspath(bom_path))
-        xlsx_path, txt_path = gen_report(bom_path, rows, stats, {}, {}, out_dir)
-        print("报告已生成:")
-        print("   %s" % xlsx_path)
-        print("   %s" % txt_path)
+        xlsx_path, txt_path, docx_path = gen_report(bom_path, rows, stats, {}, {}, out_dir, formats)
+        _print_paths(xlsx_path, txt_path, docx_path)
         return 0 if oa == 0 and ob == 0 else 2
 
     # 方案一：PDF vs PDF
@@ -3211,10 +3514,8 @@ def run_cli(bom_path=None, pdf_path=None, col_name="Part Reference", mode="位�
         print("[3/3] 生成报告...")
         if not out_dir:
             out_dir = os.path.dirname(os.path.abspath(bom_path))
-        xlsx_path, txt_path = gen_report(bom_path, rows, stats, {}, {}, out_dir)
-        print("报告已生成:")
-        print("   %s" % xlsx_path)
-        print("   %s" % txt_path)
+        xlsx_path, txt_path, docx_path = gen_report(bom_path, rows, stats, {}, {}, out_dir, formats)
+        _print_paths(xlsx_path, txt_path, docx_path)
         return 0 if oa == 0 and ob == 0 else 2
 
     # 方案二：Excel vs PDF（BOM 器件核对）
@@ -3265,10 +3566,8 @@ def run_cli(bom_path=None, pdf_path=None, col_name="Part Reference", mode="位�
     print("[4/4] 生成报告...")
     if not out_dir:
         out_dir = os.path.dirname(os.path.abspath(bom_path))
-    xlsx_path, txt_path = gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir)
-    print("报告已生成:")
-    print("   %s" % xlsx_path)
-    print("   %s" % txt_path)
+    xlsx_path, txt_path, docx_path = gen_report(bom_path, rows, stats, pdf_tokens, pages_text, out_dir, formats)
+    _print_paths(xlsx_path, txt_path, docx_path)
     return 0 if badc == 0 else 2
 
 
@@ -3295,13 +3594,22 @@ def main():
     parser.add_argument("--match", type=str, default="位号核对(推荐)",
                         choices=["位号核对(推荐)", "全文匹配"], help="匹配方式")
     parser.add_argument("--out", type=str, default=None, help="报告输出目录(默认=A所在目录)")
+    parser.add_argument("--format", type=str, default=None,
+                        help="导出类型，逗号分隔，如 xlsx,docx,pdf,txt（默认全部）")
     args = parser.parse_args()
 
+    fmts = None
+    if args.format:
+        alias = {"excel": "xlsx", "word": "docx", "pdf": "pdf", "txt": "txt",
+                 "xlsx": "xlsx", "docx": "docx"}
+        fmts = list({alias.get(x.strip().lower(), x.strip().lower())
+                     for x in args.format.split(",") if x.strip()})
+
     if args.compare:
-        code = run_cli(args.a, args.pdf, args.col, args.match, args.out, args.b, args.compare)
+        code = run_cli(args.a, args.pdf, args.col, args.match, args.out, args.b, args.compare, fmts)
         sys.exit(code)
     if args.check:
-        code = run_cli(args.bom, args.pdf, args.col, args.match, args.out)
+        code = run_cli(args.bom, args.pdf, args.col, args.match, args.out, formats=fmts)
         sys.exit(code)
     # 默认进入 GUI
     run_gui()
