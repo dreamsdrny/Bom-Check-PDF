@@ -1922,7 +1922,7 @@ def _export_pdf_report(out_dir, base_name, rows, stats, path_a, path_b):
     def _p(x, y, text, size=8, font=BODY, color=BLACK):
         page.insert_text((x, y), text, fontsize=size, fontname=font, color=color)
 
-    # ---- 顶部页眉（仿参考文档） ----
+    # ---- 顶部页眉（参考文档） ----
     _p(34, 55, "Seyond Inc.", 11.2, BOLD)
     _p(34, 68, "Seyond Production", 9, BOLD)
     _p(34, 80, "Printed by", 6, BOLD)

@@ -13,18 +13,20 @@ from typing import Any
 class CompareStatus(Enum):
     MATCH = "一致"
     FIELD_MISMATCH = "字段不一致"
-    ONLY_A = "仅A有"
-    ONLY_B = "仅B有"
-    PENDING = "待确认"
+    PDF_ONLY = "PDF有Excel无"
+    EXCEL_ONLY = "仅Excel有(PDF无此料号)"
+    A_ONLY = "仅文件A"
+    B_ONLY = "仅文件B"
+    PENDING = "待确认(值/封装在PDF上未匹配)"
     DESIGNATOR_DIFF = "位号集合差异"
 
 
 class CompareMode(Enum):
-    PDF_TO_EXCEL = "pdf2excel"
-    PDF_TO_EXCEL_MPN = "mpn"
-    EXCEL_TO_EXCEL = "excel_excel"
-    EXCEL_TO_EXCEL_MPN = "excelmpn"
-    PDF_TO_PDF = "pdf_pdf"
+    EXCEL_VS_PDF = "pdf2excel"
+    EXCEL_VS_PDF_MPN = "mpn"
+    EXCEL_VS_EXCEL = "excel_excel"
+    EXCEL_VS_EXCEL_MPN = "excelmpn"
+    PDF_VS_PDF = "pdf_pdf"
     GROUP = "group"
 
 
@@ -61,11 +63,11 @@ class CompareResult:
 
     @property
     def is_only_a(self) -> bool:
-        return self.status == CompareStatus.ONLY_A
+        return self.status in (CompareStatus.A_ONLY, CompareStatus.PDF_ONLY, CompareStatus.EXCEL_ONLY)
 
     @property
     def is_only_b(self) -> bool:
-        return self.status == CompareStatus.ONLY_B
+        return self.status == CompareStatus.B_ONLY
 
 
 @dataclass

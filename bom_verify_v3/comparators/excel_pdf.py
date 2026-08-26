@@ -1,11 +1,14 @@
-"""PDF -> Excel designator comparison."""
+"""PDF -> Excel designator comparison.
+Exact logic match with original bom_pdf_verify.py compare_pdf_to_excel()."""
+
+import re as _re
 
 from ..models import CompareResult, CompareStats, CompareMode, CompareStatus, FieldDiff
-from ..normalizer import normalize_value
+from ..normalizer import normalize_value as _app_smart
 from .base import BaseComparator, register
 
 
-@register(CompareMode.PDF_TO_EXCEL)
+@register(CompareMode.EXCEL_VS_PDF)
 class PdfToExcelComparator(BaseComparator):
     """Compare PDF designators against Excel BOM."""
 
@@ -13,10 +16,7 @@ class PdfToExcelComparator(BaseComparator):
         self, bom_path: str, pdf_path: str, primary: str = "Part Reference", **kwargs
     ) -> tuple[list[CompareResult], CompareStats]:
         from ..readers import load_bom, decode_pdf_blocks, _designator_col_name
-        from ..extractors import (
-            build_pdf_designator_annotations,
-            split_designators_text,
-        )
+        from ..extractors import build_pdf_designator_annotations, split_designators_text
 
         pages_words, _, _ = decode_pdf_blocks(pdf_path)
         annotations = build_pdf_designator_annotations(pages_words)
@@ -48,10 +48,10 @@ class PdfToExcelComparator(BaseComparator):
             if not excel_rows:
                 n_pdf_only += 1
                 results.append(CompareResult(
-                    key=des, status=CompareStatus.ONLY_A, mode=CompareMode.PDF_TO_EXCEL,
+                    key=des, status=CompareStatus.PDF_ONLY, mode=CompareMode.EXCEL_VS_PDF,
                     source_a={"designator": des, "pdf_pages": ann["pages"]},
                     source_b={},
-                    extra={"near": near_text},
+                    extra={"near": near_text, "valueA": "", "footA": "", "qty": ""},
                 ))
                 continue
 
@@ -61,8 +61,8 @@ class PdfToExcelComparator(BaseComparator):
             ef = er["values"][fidx] if fidx is not None else ""
             eq = er["values"][qidx] if qidx is not None else ""
 
-            nv = normalize_value(ev)
-            nf = normalize_value(ef)
+            nv = _app_smart(ev)
+            nf = _app_smart(ef)
             hit = False
             candidates = [str(x) for x in [ev, nv, ef, nf] if x]
             for c in candidates:
@@ -74,10 +74,10 @@ class PdfToExcelComparator(BaseComparator):
                     if c == wl:
                         hit = True
                         break
-                    if normalize_value(c) == normalize_value(w):
+                    if _app_smart(c) == _app_smart(w):
                         hit = True
                         break
-                    c_short = __import__("re").fullmatch(r"[\d.]{1,6}", c)
+                    c_short = _re.fullmatch(r"[\d.]{1,6}", c)
                     if c_short and len(c) <= 5 and (c in wl or wl in c):
                         hit = True
                         break
@@ -87,7 +87,7 @@ class PdfToExcelComparator(BaseComparator):
             if hit:
                 n_ok += 1
                 results.append(CompareResult(
-                    key=des, status=CompareStatus.MATCH, mode=CompareMode.PDF_TO_EXCEL,
+                    key=des, status=CompareStatus.MATCH, mode=CompareMode.EXCEL_VS_PDF,
                     source_a={"designator": des, "value": ev, "footprint": ef, "quantity": eq},
                     source_b={"near_text": near_text},
                     extra={"near": near_text, "valueA": ev, "footA": ef, "qty": eq},
@@ -95,7 +95,7 @@ class PdfToExcelComparator(BaseComparator):
             else:
                 n_may += 1
                 results.append(CompareResult(
-                    key=des, status=CompareStatus.PENDING, mode=CompareMode.PDF_TO_EXCEL,
+                    key=des, status=CompareStatus.PENDING, mode=CompareMode.EXCEL_VS_PDF,
                     source_a={"designator": des, "value": ev, "footprint": ef, "quantity": eq},
                     source_b={"near_text": near_text},
                     diffs=[FieldDiff(field="值/封装", value_a=str(ev), value_b="PDF上未匹配")],
@@ -103,7 +103,7 @@ class PdfToExcelComparator(BaseComparator):
                 ))
 
         stats = CompareStats(
-            mode=CompareMode.PDF_TO_EXCEL,
+            mode=CompareMode.EXCEL_VS_PDF,
             total_keys=len(annotations),
             matched=n_ok,
             only_a=n_pdf_only,
