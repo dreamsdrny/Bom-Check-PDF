@@ -52,6 +52,53 @@ def _enable_dpi():
                 pass
 
 
+def _resource_path(name):
+    base = getattr(sys, "_MEIPASS", None)
+    roots = []
+    if base:
+        roots += [base, os.path.join(base, "assets")]
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots += [
+        here,
+        os.path.join(here, "assets"),
+        os.path.dirname(os.path.dirname(here)),
+        os.getcwd(),
+    ]
+    for root in roots:
+        candidate = os.path.join(root, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _set_app_id():
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "Evan.BomCheck.V3")
+    except Exception:
+        pass
+
+
+def _set_window_icon(root):
+    ico = _resource_path("evan.ico")
+    if ico:
+        try:
+            root.iconbitmap(default=ico)
+        except Exception:
+            pass
+    png = _resource_path("evan.png")
+    if png:
+        try:
+            image = tk.PhotoImage(file=png)
+            root.iconphoto(True, image)
+            root._app_icon = image
+        except Exception:
+            pass
+
+
 def _detect_scaling(root):
     try:
         import ctypes
@@ -140,8 +187,10 @@ def _app_mode_to_v3_mode(compare_type, sub_mode):
 
 def run_gui():
     _enable_dpi()
+    _set_app_id()
     root = tk.Tk()
     root.title("BOM ↔ PDF 原理图 器件核对工具 V3")
+    _set_window_icon(root)
     scale = _detect_scaling(root)
     _style(Theme, scale)
 
