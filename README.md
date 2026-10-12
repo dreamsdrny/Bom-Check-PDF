@@ -1,3 +1,15 @@
+入口层   main.py / gui.py / ui_main.py / layout_brd.py / evan_dfm.py
+          │
+核心管线  pcb_reader → signal_classifier → rule_engine → dfm_engine → skill_generator → report_generator
+          │                    checklist_reader / checklist_auto_fill
+          │
+DFM/制造  dfm_rules(基础Issue模型) ← dfm_report / fab_data_reader / fab_viewer / panelizer / panel_engine
+          │
+拼版/查看  panel_engine + panel_ui + panel_export + panelizer + dxf_reader + pdf_reader
+          │
+配置      config/*.yaml (checklist_rules / dfm_capability_hongban / dfm_capability_sihui)
+
+
 一、软件定位
 项目打包出的 GUI 单机版，产物位于 dist\Layout-brd\。入口为 layout_brd.py，实际界面来自 gui.py:25 的 BRD_AIGUI，打包时额外套用了 evan.ico 图标并**移除了 DFM 功能分析按钮**（layout_brd.py:53）。
 
