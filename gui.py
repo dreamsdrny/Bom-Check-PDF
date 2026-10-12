@@ -23,9 +23,13 @@ from src.checklist_reader import read_checklist_excel
 
 
 class BRD_AIGUI: 
-    def __init__(self):
-        self.root = tk.Tk()  #主界面
-        self.root.title("BRD-AI: Cadence Allegro Constraint Generator")
+    def __init__(self, master=None):
+        self._owns_root = master is None  # 独立运行时创建主窗口; 嵌入时作为二级窗口
+        if master is None:
+            self.root = tk.Tk()  #主界面
+        else:
+            self.root = tk.Toplevel(master)
+        self.root.title("Evan_DFM - 分析BRD (Cadence Allegro)")
         self.root.geometry("780x680")  #分辨率
         self.root.resizable(True, True) #设置窗口大小可变
 
@@ -101,6 +105,11 @@ class BRD_AIGUI:
 
         ttk.Button(opt_frame, text="DFM 功能分析", command=self._open_dfm_dialog).grid(
             row=1, column=7, columnspan=2, padx=5, pady=(6, 0), sticky=tk.E)
+
+        ttk.Button(opt_frame, text="制造数据DFM", command=self._open_fab_dialog).grid(
+            row=2, column=6, padx=2, pady=(6, 0), sticky=tk.E)
+        ttk.Button(opt_frame, text="自动拼板", command=self._open_panel_dialog).grid(
+            row=2, column=7, columnspan=2, padx=2, pady=(6, 0), sticky=tk.E)
 
         ttk.Label(opt_frame, text="Checker Name:").grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
         self.checker_name = tk.StringVar(value="BRD-AI")
@@ -204,6 +213,35 @@ class BRD_AIGUI:
 
     def _open_dfm_dialog(self):
         DFMDialog(self.root)
+
+    def _open_fab_dialog(self):
+        from src.fab_data_reader import analyze_fab
+        from src.fab_viewer import FabViewer
+        path = filedialog.askopenfilename(
+            title="选择 Gerber / NC Drill 文件 (取消则改为选择 ODB++ 目录)",
+            filetypes=[("Gerber/Drill", "*.gbr *.ger *.art *.pho *.drl"),
+                       ("All files", "*.*")])
+        if not path:
+            path = filedialog.askdirectory(title="选择 ODB++ / 制造数据目录")
+        if not path:
+            return
+        try:
+            result = analyze_fab(path)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("解析失败", str(exc))
+            return
+        stats = result["stats"]
+        issues = result["issues"]
+        msg = (f"图形层 {len(stats['gerber_layers'])} / 钻孔 {len(stats['drill_files'])} / "
+               f"ODB++ {len(stats['odb_jobs'])}\n"
+               f"图形数 {stats['feature_count']}   孔数 {stats['hole_count']}\n"
+               f"发现制造数据问题 {len(issues)} 项\n\n打开图形化交叉定位查看器?")
+        if messagebox.askyesno("制造数据 DFM", msg):
+            FabViewer(self.root, result["data"], issues)
+
+    def _open_panel_dialog(self):
+        from src.panel_ui import PanelDesigner
+        PanelDesigner(self.root)
 
     def _open_output(self):
         out = self.output_dir.get()
@@ -447,7 +485,8 @@ class BRD_AIGUI:
         self.demo_btn.config(state=tk.NORMAL)
 
     def run(self):
-        self.root.mainloop()
+        if self._owns_root:
+            self.root.mainloop()
 
 
 DFM_FIELDS = [
@@ -688,6 +727,90 @@ class DFMDialog:
             messagebox.showinfo("导出完成", f"Excel: {path}\nText:  {txt_path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("导出失败", str(exc))
+
+
+class PanelDialog:
+    """自动拼板与成本优化对话框"""
+
+    FIELDS = [
+        ("board_w", "单板宽度 (mm)", "31"),
+        ("board_h", "单板高度 (mm)", "31.2"),
+        ("board_qty", "需求数量", "1000"),
+        ("panel_w", "工作板宽 (mm)", "544.068"),
+        ("panel_h", "工作板高 (mm)", "620.268"),
+        ("rail_mm", "工艺边 (mm)", "4"),
+        ("gap_mm", "单板间距 (mm)", "1.6"),
+    ]
+
+    def __init__(self, master):
+        self.win = tk.Toplevel(master)
+        self.win.title("自动拼板与成本优化")
+        self.win.geometry("560x520")
+
+        form = ttk.LabelFrame(self.win, text="参数", padding=8)
+        form.pack(fill=tk.X, padx=8, pady=8)
+        self.vars = {}
+        for i, (key, label, default) in enumerate(self.FIELDS):
+            ttk.Label(form, text=label).grid(row=i, column=0, sticky=tk.W, pady=2)
+            var = tk.StringVar(value=default)
+            ttk.Entry(form, textvariable=var, width=12).grid(row=i, column=1, padx=4, sticky=tk.W)
+            self.vars[key] = var
+
+        self.rotate_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(form, text="允许 90° 旋转", variable=self.rotate_var).grid(
+            row=len(self.FIELDS), column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+
+        btns = ttk.Frame(self.win)
+        btns.pack(fill=tk.X, padx=8)
+        ttk.Button(btns, text="计算", command=self._run).pack(side=tk.LEFT)
+        ttk.Button(btns, text="导出 SVG", command=self._export).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="关闭", command=self.win.destroy).pack(side=tk.RIGHT)
+
+        self.out = tk.Text(self.win, height=18, wrap=tk.WORD, font=("Consolas", 10))
+        self.out.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.result = None
+
+    def _run(self):
+        from src.panelizer import optimize_panel
+        params = {}
+        for key, var in self.vars.items():
+            txt = var.get().strip()
+            if txt:
+                try:
+                    params[key] = float(txt)
+                except ValueError:
+                    messagebox.showwarning("参数错误", f"{key} 不是有效数字: {txt}")
+                    return
+        params["allow_rotate"] = self.rotate_var.get()
+        self.result = optimize_panel(params)
+        r = self.result
+        self.out.delete(1.0, tk.END)
+        self.out.insert(tk.END, f"结论: {r.get('recommendation','N/A')}\n")
+        self.out.insert(tk.END, f"每拼板: {r.get('pcs_per_panel')} pcs   "
+                                f"所需拼板: {r.get('panels_needed')}   余量: {r.get('leftover')}\n")
+        best = r.get("best", {})
+        self.out.insert(tk.END, f"阵列: {best.get('nx')} x {best.get('ny')}   "
+                                f"旋转: {'90°' if best.get('rotated') else '0°'}   "
+                                f"利用率: {r.get('utilization')}\n")
+        self.out.insert(tk.END, f"Mark点: {len(r.get('mark_points', []))}   "
+                                f"定位孔: {len(r.get('tooling_holes', []))}\n\n")
+        for it in r.get("issues", []):
+            self.out.insert(tk.END, f"[{it['severity']}] {it['description']}\n        建议: {it['suggestion']}\n")
+
+    def _export(self):
+        if not self.result:
+            messagebox.showwarning("提示", "请先计算")
+            return
+        path = filedialog.asksaveasfilename(title="导出拼板预览",
+                                            defaultextension=".svg",
+                                            initialfile="panel_preview.svg",
+                                            filetypes=[("SVG", "*.svg"), ("All files", "*.*")])
+        if not path:
+            return
+        from src.panelizer import panel_svg
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(panel_svg(self.result))
+        messagebox.showinfo("导出完成", path)
 
 
 def main():

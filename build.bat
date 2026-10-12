@@ -34,6 +34,9 @@ python -m PyInstaller --clean --noconfirm ^
     --hidden-import=src.dfm_engine ^
     --hidden-import=src.dfm_rules ^
     --hidden-import=src.dfm_report ^
+    --hidden-import=src.fab_data_reader ^
+    --hidden-import=src.panelizer ^
+    --hidden-import=src.fab_viewer ^
     --hidden-import=src.skill_generator ^
     --hidden-import=src.report_generator ^
     --hidden-import=src.checklist_reader ^

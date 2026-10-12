@@ -325,8 +325,123 @@ Examples:
         choices=["hongban", "sihui"],
         help="板厂制程能力库: hongban(板厂A)/sihui(板厂B)` (默认: hongban)"
     )
+    parser.add_argument(
+        "--fab", type=str, default=None, metavar="PATH",
+        help="制造数据 DFM: 传入 Gerber/NC Drill 文件或 ODB++ 目录, 执行解析+完整性检查"
+    )
+    parser.add_argument(
+        "--cad-nets", type=str, default=None, dest="cad_nets", metavar="CAD_NETS_JSON",
+        help="CAD 端网络表 JSON ({net: [refdes.pin,...]}), 配合 --fab 做网络表比对"
+    )
+    parser.add_argument(
+        "--panelize", type=str, default=None, metavar="PANEL_JSON",
+        help="自动拼板: 传入参数 JSON (或用 'template' 生成模板)"
+    )
+    parser.add_argument(
+        "--view", action="store_true",
+        help="打开图形化交叉定位查看器 (配合 --fab)"
+    )
 
     args = parser.parse_args()
+
+    if args.panelize:
+        from src.panelizer import optimize_panel, panel_svg
+        if args.panelize == "template":
+            print(json.dumps({
+                "board_w": 31, "board_h": 31.2, "board_qty": 1000,
+                "panel_w": 544.068, "panel_h": 620.268,
+                "rail_mm": 4, "gap_mm": 1.6, "allow_rotate": True,
+            }, indent=2, ensure_ascii=False))
+            return
+        if not os.path.exists(args.panelize):
+            print(f"[ERROR] 拼板参数文件不存在: {args.panelize}")
+            sys.exit(1)
+        with open(args.panelize, "r", encoding="utf-8-sig") as f:
+            panel_params = json.load(f)
+        pnl = optimize_panel(panel_params)
+        print("=" * 70)
+        print("  自动拼板与成本优化")
+        print("=" * 70)
+        print(f"  结论: {pnl.get('recommendation', 'N/A')}")
+        print(f"  每拼板: {pnl.get('pcs_per_panel')} pcs   所需拼板: {pnl.get('panels_needed')}   余量: {pnl.get('leftover')}")
+        for it in pnl.get("issues", []):
+            print(f"  [{it['severity']}] {it['description']}")
+        out_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+        json_out = os.path.join(out_dir, "panel_result.json")
+        with open(json_out, "w", encoding="utf-8") as f:
+            json.dump(pnl, f, indent=2, ensure_ascii=False, default=str)
+        svg_out = os.path.join(out_dir, "panel_preview.svg")
+        with open(svg_out, "w", encoding="utf-8") as f:
+            f.write(panel_svg(pnl))
+        print(f"  详细结果: {json_out}")
+        print(f"  拼板预览: {svg_out}")
+        return
+
+    if args.fab:
+        from src.fab_data_reader import (analyze_fab, compare_netlists,
+                                         netlist_compare_issues, normalize_cad_nets)
+        from src.fab_viewer import render_fab_svg
+        result = analyze_fab(args.fab)
+        stats = result["stats"]
+        issues = list(result["issues"])
+        comparison = None
+        if args.cad_nets:
+            if not os.path.exists(args.cad_nets):
+                print(f"[ERROR] CAD 网络表不存在: {args.cad_nets}")
+                sys.exit(1)
+            with open(args.cad_nets, "r", encoding="utf-8-sig") as f:
+                cad_nets = normalize_cad_nets(json.load(f))
+            comparison = compare_netlists(cad_nets, stats.get("nets", {}))
+            issues += netlist_compare_issues(comparison)
+        print("=" * 70)
+        print(f"  制造数据 DFM: {args.fab}")
+        print("=" * 70)
+        print(f"  Gerber 层: {len(stats['gerber_layers'])}   "
+              f"钻孔文件: {len(stats['drill_files'])}   "
+              f"ODB++: {len(stats['odb_jobs'])}")
+        mf = stats['min_line_width_mm']
+        mh = stats['min_hole_mm']
+        print(f"  图形数: {stats['feature_count']}   孔数: {stats['hole_count']}   "
+              f"最小线宽: {mf if mf is not None else 'N/A'}mm   "
+              f"最小孔径: {mh if mh is not None else 'N/A'}mm")
+        if args.cad_nets:
+            print(f"  网络比对: CAD {comparison['cad_net_count']} 网络 / FAB {comparison['fab_net_count']} 网络   "
+                  f"Open {comparison['open_count']} / Short {comparison['short_count']}   "
+                  f"{'PASS' if comparison['passed'] else 'FAIL'}")
+        print("-" * 70)
+        if issues:
+            for it in issues:
+                loc = f" @({it['x']:.2f},{it['y']:.2f})" if it.get("x") is not None else ""
+                print(f"  [{it['severity']}] {it['code']} {it['rule']}: {it['description']}{loc}")
+        else:
+            print("  未发现制造数据问题")
+        out_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+        json_out = os.path.join(out_dir, "fab_analysis.json")
+        with open(json_out, "w", encoding="utf-8") as f:
+            json.dump({"stats": {k: v for k, v in stats.items() if k != "nets"},
+                       "issues": issues}, f, indent=2, ensure_ascii=False, default=str)
+        svg_out = os.path.join(out_dir, "fab_view.svg")
+        render_fab_svg(result["data"], issues, svg_out)
+        print(f"  详细报告: {json_out}")
+        print(f"  版图预览: {svg_out}")
+        from src.fab_data_reader import build_fab_report
+        from src.dfm_report import generate_dfm_excel, generate_dfm_text
+        fab_report = build_fab_report(result, comparison, args.fab)
+        board_meta = {"board_name": (stats.get("odb_jobs") or [result["data"][0]["name"] if result["data"] else "Fabrication"])[0]}
+        xlsx_out = generate_dfm_excel(fab_report, os.path.join(out_dir, "fab_dfm_report.xlsx"), board_meta)
+        txt_out = generate_dfm_text(fab_report, os.path.join(out_dir, "fab_dfm_report.txt"), board_meta)
+        print(f"  DFM报告(Excel): {xlsx_out}")
+        print(f"  DFM报告(Text):  {txt_out}")
+        if args.view:
+            import tkinter as tk
+            from src.fab_viewer import FabViewer
+            root = tk.Tk()
+            root.withdraw()
+            FabViewer(root, result["data"], issues)
+            root.mainloop()
+        return
 
     if args.dfm:
         from src.dfm_engine import analyze_design, load_capability_db, factory_label, normalize_factory
