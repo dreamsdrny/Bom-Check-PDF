@@ -17,7 +17,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from src.dfm_rules import SEVERITY_LEVELS, SEVERITY_COLOR, SEVERITY_ORDER
+from src.dfm_rules import SEVERITY_LEVELS, SEVERITY_COLOR
 
 
 def _thin_border():
@@ -190,7 +190,12 @@ def generate_dfm_excel(analysis: dict, output_path: str,
     ws3.cell(row=3, column=6, value="装配工艺").font = section_font
     ws3.cell(row=4, column=6, value="详细资料")
     ws3.cell(row=4, column=7, value="数值")
-    style_header(ws3, 4, 4)
+    for c in (6, 7):
+        cell = ws3.cell(row=4, column=c)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+        cell.border = border
     r2 = 5
     for k, v in info_stats.get("assembly", {}).items():
         ws3.cell(row=r2, column=6, value=k).border = border

@@ -43,7 +43,8 @@ class GerberViewer:
     def __init__(self, master, title="Gerber 查看器 (叠加对比)"):
         self.win = tk.Toplevel(master)
         self.win.title(f"Evan_DFM - {title}")
-        self.win.geometry("1180x760")
+        from src.win_dpi import apply_window
+        apply_window(self.win, 1180, 760)
 
         self.layers = []
         self.selected = None
@@ -59,6 +60,7 @@ class GerberViewer:
         top.pack(fill=tk.X)
         ttk.Button(top, text="导入Gerber...", command=self._import_gerber).pack(side=tk.LEFT)
         ttk.Button(top, text="导入钻孔...", command=self._import_drill).pack(side=tk.LEFT, padx=4)
+        ttk.Button(top, text="导入全部(目录)...", command=self._import_dir).pack(side=tk.LEFT)
         ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         ttk.Button(top, text="对比: 导入A", command=lambda: self._compare_load("A")).pack(side=tk.LEFT)
         ttk.Button(top, text="对比: 导入B", command=lambda: self._compare_load("B")).pack(side=tk.LEFT, padx=4)
@@ -79,22 +81,41 @@ class GerberViewer:
         ttk.Button(bar, text="上移", command=lambda: self._move_layer(1)).pack(side=tk.LEFT, padx=2)
         ttk.Button(bar, text="下移", command=lambda: self._move_layer(-1)).pack(side=tk.LEFT, padx=2)
         ttk.Button(bar, text="删除", command=self._delete_sel).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="对齐中心", command=self._align_center).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="对齐左下", command=self._align_bl).pack(side=tk.LEFT, padx=2)
+        self.move_mode = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="拖动移动图层", variable=self.move_mode).pack(side=tk.LEFT, padx=6)
         self.info = tk.StringVar(value="左键拖动=移动选中图层；右键拖动=平移；滚轮=缩放")
         ttk.Label(bar, textvariable=self.info, foreground="#555").pack(side=tk.RIGHT)
 
         body = ttk.Frame(self.win)
         body.pack(fill=tk.BOTH, expand=True)
 
-        left = ttk.LabelFrame(body, text="图层", padding=4)
+        left = ttk.LabelFrame(body, text="图层 (点『开/关』列开关)", padding=4)
         left.pack(side=tk.LEFT, fill=tk.Y)
-        self.listbox = tk.Listbox(left, width=34, height=30, activestyle="dotbox",
-                                  font=("Consolas", 9), exportselection=False)
-        self.listbox.pack(side=tk.LEFT, fill=tk.Y)
-        sb = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=sb.set)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.listbox.bind("<<ListboxSelect>>", self._on_select)
-        self.listbox.bind("<Double-Button-1>", self._toggle_visible)
+        btnbar = ttk.Frame(left)
+        btnbar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(btnbar, text="全开", width=5, command=self._all_on).pack(side=tk.LEFT)
+        ttk.Button(btnbar, text="一键全关", width=8, command=self._all_off).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btnbar, text="开选中", width=6, command=lambda: self._set_sel(True)).pack(side=tk.LEFT)
+        ttk.Button(btnbar, text="关选中", width=6, command=lambda: self._set_sel(False)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btnbar, text="反选", width=5, command=self._invert).pack(side=tk.LEFT)
+
+        self.tree = ttk.Treeview(left, columns=("st", "name"), show="headings",
+                                 height=28, selectmode="extended")
+        self.tree.heading("st", text="开/关")
+        self.tree.heading("name", text="图层")
+        self.tree.column("st", width=52, anchor=tk.CENTER, stretch=False)
+        self.tree.column("name", width=230, anchor=tk.W)
+        self.tree.pack(side=tk.LEFT, fill=tk.Y)
+        tsb = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tsb.set)
+        tsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.tag_configure("on", foreground="#0a7a3a")
+        self.tree.tag_configure("off", foreground="#999999")
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Double-Button-1>", self._on_tree_dbl)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
         self.canvas = tk.Canvas(body, bg="#0f1115", highlightthickness=0)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -117,6 +138,7 @@ class GerberViewer:
         if color is None:
             color = _PALETTE[len(self.layers) % len(_PALETTE)]
         layer = GerberLayer(name or os.path.basename(path), data, color)
+        layer.visible = False                    # 默认关闭 (需要时点亮)
         self.layers.append(layer)
         self._refresh_list()
         self.selected = len(self.layers) - 1
@@ -129,6 +151,7 @@ class GerberViewer:
         color = "#ffffff"
         layer = GerberLayer(os.path.basename(path), data, color)
         layer.kind = "drill"
+        layer.visible = False
         self.layers.append(layer)
         self._refresh_list()
         self.selected = len(self.layers) - 1
@@ -141,11 +164,7 @@ class GerberViewer:
             title="导入 Gerber 文件",
             filetypes=[("Gerber", "*.gbr *.ger *.art *.pho *.gto *.gbo *.gts *.gbs *.gtl *.gbl"),
                        ("All files", "*.*")])
-        for p in paths:
-            try:
-                self.add_layer(p)
-            except Exception as exc:  # noqa: BLE001
-                messagebox.showerror("导入失败", f"{p}\n{exc}")
+        self._add_paths(paths)
 
     def _import_drill(self):
         paths = filedialog.askopenfilenames(title="导入钻孔 (NC Drill)",
@@ -153,6 +172,32 @@ class GerberViewer:
         for p in paths:
             try:
                 self.add_drill(p)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("导入失败", f"{p}\n{exc}")
+
+    def _import_dir(self):
+        d = filedialog.askdirectory(title="导入目录下全部 Gerber/钻孔")
+        if not d:
+            return
+        exts = (".gbr", ".ger", ".art", ".pho", ".gto", ".gbo", ".gts", ".gbs",
+                ".gtl", ".gbl", ".gtp", ".gbp", ".gko", ".gm1", ".drl")
+        paths = []
+        for root_, _dirs, files in os.walk(d):
+            for fn in sorted(files):
+                if fn.lower().endswith(exts):
+                    paths.append(os.path.join(root_, fn))
+        if not paths:
+            messagebox.showinfo("导入", "目录下未找到 Gerber/钻孔文件")
+            return
+        self._add_paths(paths)
+
+    def _add_paths(self, paths):
+        for p in paths:
+            try:
+                if p.lower().endswith(".drl") or "drill" in p.lower():
+                    self.add_drill(p)
+                else:
+                    self.add_layer(p)
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("导入失败", f"{p}\n{exc}")
 
@@ -164,6 +209,7 @@ class GerberViewer:
         color = "#e53935" if tag == "A" else "#1e88e5"
         layer = self.add_layer(path, color=color, name=f"[{tag}] {os.path.basename(path)}")
         layer.mirror_x = (tag == "B")
+        layer.visible = True
         self._refresh_list()
         self.fit()
         self.info.set(f"对比模式: A=红 B=蓝; 选中图层后左键拖动即可重叠对齐")
@@ -175,31 +221,76 @@ class GerberViewer:
         self._render()
 
     def _refresh_list(self):
-        self.listbox.delete(0, tk.END)
+        self.tree.delete(*self.tree.get_children())
         for i, ly in enumerate(self.layers):
             mark = "●" if ly.visible else "○"
-            self.listbox.insert(tk.END, f"{mark} {ly.name}  ({ly.color})")
-        if self.selected is not None and 0 <= self.selected < len(self.layers):
-            self.listbox.selection_set(self.selected)
-            self.listbox.itemconfig(self.selected, fg=self.layers[self.selected].color)
+            tag = "on" if ly.visible else "off"
+            self.tree.insert("", tk.END, iid=str(i),
+                             values=(mark, f"{ly.name}"), tags=(tag,))
+        self._sync_selection()
+
+    def _on_tree_click(self, event):
+        row = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if not row:
+            return
+        mods = event.state & 0x0005   # Shift(0x1) 或 Ctrl(0x4)
+        if col == "#1" and not mods:  # 点『开/关』列: 单层切换
+            i = int(row)
+            self.layers[i].visible = not self.layers[i].visible
+            self.selected = i
+            self._refresh_list()
+            self._render()
+            return "break"
+
+    def _on_tree_dbl(self, event):
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        i = int(row)
+        self.layers[i].visible = not self.layers[i].visible
+        self.selected = i
+        self._refresh_list()
+        self._render()
 
     def _on_select(self, _e=None):
-        sel = self.listbox.curselection()
+        sel = self.tree.selection()
         if sel:
-            self.selected = sel[0]
+            self.selected = int(sel[0])
             self._render()
 
     def _sync_selection(self):
-        self.listbox.selection_clear(0, tk.END)
+        self.tree.selection_remove(*self.tree.selection())
         if self.selected is not None and 0 <= self.selected < len(self.layers):
-            self.listbox.selection_set(self.selected)
-            self.listbox.see(self.selected)
+            self.tree.selection_set(str(self.selected))
+            self.tree.see(str(self.selected))
 
-    def _toggle_visible(self, _e=None):
-        if self.selected is not None:
-            self.layers[self.selected].visible = not self.layers[self.selected].visible
-            self._refresh_list()
-            self._render()
+    def _selected_indices(self):
+        return [int(s) for s in self.tree.selection() if s.isdigit()]
+
+    def _set_sel(self, value):
+        for i in self._selected_indices():
+            self.layers[i].visible = value
+        self._refresh_list()
+        self._render()
+
+    def _all_on(self):
+        for ly in self.layers:
+            ly.visible = True
+        self._refresh_list()
+        self._render()
+
+    def _all_off(self):
+        for ly in self.layers:
+            ly.visible = False
+        self._refresh_list()
+        self._render()
+
+    def _invert(self):
+        for ly in self.layers:
+            ly.visible = not ly.visible
+        self._refresh_list()
+        self._render()
 
     def _move_layer(self, direction):
         i = self.selected
@@ -243,9 +334,43 @@ class GerberViewer:
             ly.mirror_x = not ly.mirror_x
             self._render()
 
+    def _ref_layer(self):
+        for i, ly in enumerate(self.layers):
+            if i != self.selected and ly.visible and ly.data.get("bbox") and ly.data["bbox"][0] is not None:
+                return ly
+        return None
+
+    def _align_center(self):
+        ly = self._sel_layer()
+        ref = self._ref_layer()
+        if not ly or not ref:
+            return
+        b = ly.data.get("bbox"); rb = ref.data.get("bbox")
+        if not b or not rb or b[0] is None or rb[0] is None:
+            return
+        ly.offset = [ (rb[0]+rb[2])/2 - (b[0]+b[2])/2,
+                      (rb[1]+rb[3])/2 - (b[1]+b[3])/2 ]
+        ly.mirror_x = ref.mirror_x
+        self._render()
+        self.info.set(f"{ly.name}: 已按中心对齐到 {ref.name}")
+
+    def _align_bl(self):
+        ly = self._sel_layer()
+        ref = self._ref_layer()
+        if not ly or not ref:
+            return
+        b = ly.data.get("bbox"); rb = ref.data.get("bbox")
+        if not b or not rb or b[0] is None or rb[0] is None:
+            return
+        ly.offset = [rb[0] - b[0], rb[1] - b[1]]
+        self._render()
+        self.info.set(f"{ly.name}: 已按左下角对齐到 {ref.name}")
+
     # ---------------- 变换 ----------------
     def _bbox_all(self):
         boxes = [ly.bbox() for ly in self.layers if ly.visible and ly.bbox()]
+        if not boxes:                     # 全部隐藏时, 仍按全部图层适配
+            boxes = [ly.bbox() for ly in self.layers if ly.bbox()]
         if not boxes:
             return (0.0, 0.0, 100.0, 100.0)
         return (min(b[0] for b in boxes), min(b[1] for b in boxes),
@@ -281,6 +406,9 @@ class GerberViewer:
 
     # ---------------- 交互 ----------------
     def _on_press(self, event):
+        if not getattr(self, "move_mode", None) or not self.move_mode.get():
+            self._pan_start(event)
+            return
         self._drag = {"mode": "layer", "px": event.x, "py": event.y}
         ly = self._sel_layer()
         if ly:
@@ -324,28 +452,82 @@ class GerberViewer:
                 continue
             self._draw_layer(cv, ly, selected=(ly is self._sel_layer()))
 
+    def _ap_shape(self, ly, p):
+        """返回闪拍光圈形状: (shape, w_mm, h_mm, edges, rot)"""
+        aps = ly.data.get("apertures") or {}
+        ap = aps.get(p.get("aperture"))
+        scale = 25.4 if ly.data.get("unit") == "inch" else 1.0
+        if not ap:
+            w = p.get("width") or 0.2
+            return ("C", w, w, 0, 0.0)
+        shape = str(ap.get("shape", "C"))
+        params = [x for x in (ap.get("params") or []) if isinstance(x, (int, float))]
+        if shape == "C" or not params:
+            w = (params[0] if params else (p.get("width") or 0.2)) * scale
+            return ("C", w, w, 0, 0.0)
+        if shape == "R":
+            w = params[0] * scale
+            h = (params[1] if len(params) > 1 else params[0]) * scale
+            return ("R", w, h, 0, 0.0)
+        if shape == "O":
+            w = params[0] * scale
+            h = (params[1] if len(params) > 1 else params[0]) * scale
+            return ("O", w, h, 0, 0.0)
+        if shape == "P":
+            d = params[0] * scale
+            edges = int(params[1]) if len(params) > 1 else 5
+            rot = params[2] if len(params) > 2 else 0.0
+            return ("P", d, d, edges, rot)
+        return ("C", (params[0] * scale if params else 0.2), 0, 0, 0.0)
+
+    def _draw_flash(self, cv, ly, p, color):
+        shape, w, h, edges, rot = self._ap_shape(ly, p)
+        dx, dy = ly.offset
+        cx, cy = self._to_canvas(p["x1"] + dx, p["y1"] + dy)
+        s = self._scale()[0]
+        if shape == "C":
+            r = max(1.0, w / 2 * s)
+            cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
+        elif shape == "R":
+            hw, hh = w / 2 * s, h / 2 * s
+            cv.create_rectangle(cx - hw, cy - hh, cx + hw, cy + hh, fill=color, outline="")
+        elif shape == "O":
+            hw, hh = w / 2 * s, h / 2 * s
+            rr = min(hw, hh)
+            if w >= h:
+                cv.create_oval(cx - hw, cy - hh, cx - hw + 2 * rr, cy + hh, fill=color, outline="")
+                cv.create_oval(cx + hw - 2 * rr, cy - hh, cx + hw, cy + hh, fill=color, outline="")
+                cv.create_rectangle(cx - hw + rr, cy - hh, cx + hw - rr, cy + hh, fill=color, outline="")
+            else:
+                cv.create_oval(cx - hw, cy - hh, cx + hw, cy - hh + 2 * rr, fill=color, outline="")
+                cv.create_oval(cx - hw, cy + hh - 2 * rr, cx + hw, cy + hh, fill=color, outline="")
+                cv.create_rectangle(cx - hw, cy - hh + rr, cx + hw, cy + hh - rr, fill=color, outline="")
+        elif shape == "P":
+            r = w / 2 * s
+            pts = []
+            for k in range(max(3, edges)):
+                a = math.radians(rot + k * 360.0 / edges)
+                pts.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
+            if len(pts) >= 6:
+                cv.create_polygon(pts, fill=color, outline="")
+
     def _draw_layer(self, cv, ly, selected=False):
         color = ly.color
-        dx, dy = ly.offset
+        bg = "#0f1115"
         for p in (ly.data.get("primitives") or ly.data.get("features") or []):
             t = p.get("type")
+            c = bg if p.get("clear") else color
+
             def T(px, py):
                 if px is None:
                     return None
                 if ly.mirror_x:
                     px = -px
-                return self._to_canvas(px + dx, py + dy)
-            x1 = p.get("x1"); y1 = p.get("y1"); x2 = p.get("x2"); y2 = p.get("y2")
-            if t in ("draw", "flash") or (t not in ("arc", "region", "error")):
-                if x1 is None:
-                    continue
-                c1 = T(x1, y1); c2 = T(x2 if x2 is not None else x1, y2 if y2 is not None else y1)
-                if t == "flash":
-                    w = p.get("width") or 0.2
-                    r = max(1.0, w / 2 * self._scale()[0])
-                    cv.create_oval(c1[0] - r, c1[1] - r, c1[0] + r, c1[1] + r, fill=color, outline="")
-                else:
-                    cv.create_line(c1[0], c1[1], c2[0], c2[1], fill=color)
+                return self._to_canvas(px + ly.offset[0], py + ly.offset[1])
+
+            if t == "flash":
+                if p.get("x1") is not None:
+                    self._draw_flash(cv, ly, p, c)
             elif t == "arc":
                 pts = self._arc_points(p)
                 if len(pts) >= 2:
@@ -353,14 +535,22 @@ class GerberViewer:
                     for px, py in pts:
                         cx, cy = T(px, py)
                         flat.extend([cx, cy])
-                    cv.create_line(*flat, fill=color)
+                    cv.create_line(*flat, fill=c)
             elif t == "region":
                 flat = []
                 for px, py in p.get("points", []):
                     cx, cy = T(px, py)
                     flat.extend([cx, cy])
                 if len(flat) >= 6:
-                    cv.create_polygon(flat, fill=color, outline="", stipple="gray50")
+                    cv.create_polygon(flat, fill=c, outline="")
+            elif t == "error":
+                continue
+            else:
+                if p.get("x1") is None:
+                    continue
+                c1 = T(p["x1"], p["y1"])
+                c2 = T(p.get("x2", p["x1"]), p.get("y2", p["y1"]))
+                cv.create_line(c1[0], c1[1], c2[0], c2[1], fill=c)
         if ly.kind == "drill":
             for h in ly.data.get("holes", []):
                 if h.get("x") is None:
@@ -371,7 +561,8 @@ class GerberViewer:
         if selected:
             b = ly.bbox()
             if b:
-                c1 = self._to_canvas(b[0], b[3]); c2 = self._to_canvas(b[2], b[1])
+                c1 = self._to_canvas(b[0], b[3])
+                c2 = self._to_canvas(b[2], b[1])
                 cv.create_rectangle(c1[0], c1[1], c2[0], c2[1], outline="#ff9800", dash=(5, 3))
 
     def _arc_points(self, p, seg=16):

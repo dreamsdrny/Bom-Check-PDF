@@ -3,10 +3,8 @@ BRD-AI: Checklist自动填写引擎
 读取Layout_Checklist.xlsx，根据BRD分析结果自动填写Check和Approved列
 """
 import os
-import re
-import copy 
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import List, Tuple
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -19,76 +17,94 @@ FAIL_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="sol
 WARN_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 MANUAL_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
 NA_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-HEADER_FILL = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
 
 THIN_BORDER = Border(
     left=Side(style="thin"), right=Side(style="thin"),  
     top=Side(style="thin"), bottom=Side(style="thin"),
 )
-# 字典，自动校验规则
+# 自动校验规则: 每条 check(r) 依据 BRD 分析结果 r (见 _analyze_brd_for_checklist) 判定。
+# 返回 (result, detail); result 取值: auto_pass / auto_verify / 手动检查 / N/A。
+# 说明: 凡本工具能给出证据(已生成约束/已识别差分等)的条目判为 auto_verify(需在 Allegro
+#       加载脚本/DRC 后确认)，无法由网表分析判定的条目一律降级为人工确认，不再无条件 PASS。
 VERIFIABLE_RULES = {
     37: {"category": "constraint", "desc": "设计约束规则已在Constraint Manager中设置",
-         "check": lambda r: ("auto_pass", "由BRD-AI自动生成约束规则")},
+         "check": lambda r: (("auto_verify",
+                              f"已生成 {r.get('physical_constraints', 0)} 条物理约束脚本，需在 Allegro 加载后确认")
+                             if r.get("physical_constraints") else ("手动检查", "未生成物理约束，需人工确认"))},
     38: {"category": "constraint", "desc": "间距规则",
-         "check": lambda r: ("auto_pass", "间距规则已通过DFM校验")},
+         "check": lambda r: (("auto_verify",
+                              f"已生成 {r.get('spacing_constraints', 0)} 条间距约束，需在 Allegro 加载后确认")
+                             if r.get("spacing_constraints") else ("手动检查", "未生成间距约束，需人工确认"))},
     39: {"category": "constraint", "desc": "SMD到连接器间距",
-         "check": lambda r: ("auto_pass", "规则已纳入Spacing Constraint")},
+         "check": lambda r: ("手动检查", "SMD 到连接器间距无法由网表分析判定，需人工确认")},
     40: {"category": "constraint", "desc": "物理/电气规则",
-         "check": lambda r: ("auto_pass", "Power Net和GND约束已设置")},
+         "check": lambda r: (("auto_verify",
+                              f"已生成 {r.get('physical_constraints', 0)} 物理 / "
+                              f"{r.get('electrical_constraints', 0)} 电气约束，需在 Allegro 加载后确认")
+                             if (r.get("physical_constraints") or r.get("electrical_constraints"))
+                             else ("手动检查", "未生成物理/电气约束，需人工确认"))},
     41: {"category": "constraint", "desc": "层叠结构",
-         "check": lambda r: ("auto_pass", "8层板, Stackup已确认")},
+         "check": lambda r: (("auto_verify", f"检测到 {r.get('layer_count', 0)} 层，需确认叠层参数")
+                             if r.get("layer_count") else ("手动检查", "未解析到层信息，需人工确认叠层"))},
     42: {"category": "constraint", "desc": "差分信号阻抗",
-         "check": lambda r: ("auto_pass", "差分对阻抗已计算并设置")},
+         "check": lambda r: (("auto_verify",
+                              f"已识别 {r.get('diff_pairs', 0)} 对差分并生成阻抗规则，需仿真/实测确认")
+                             if (r.get("diff_pairs") and r.get("electrical_constraints"))
+                             else ("手动检查", "未识别到差分对或未生成阻抗规则，需人工确认"))},
     43: {"category": "constraint", "desc": "测试点",
-         "check": lambda r: ("auto_pass", "测试点规则已纳入约束")},
+         "check": lambda r: ("手动检查", "测试点规则无法由网表分析判定，需人工确认")},
     46: {"category": "high_speed", "desc": "高速信号阻抗一致性",
-         "check": lambda r: ("auto_pass", "阻抗规则已应用于所有层")},
+         "check": lambda r: (("auto_verify", "已对高速类信号生成阻抗约束，需仿真确认一致性")
+                             if r.get("electrical_constraints")
+                             else ("手动检查", "未生成阻抗约束，需人工确认"))},
     47: {"category": "high_speed", "desc": "高速差分对",
-         "check": lambda r: ("auto_pass", "差分对已自动识别并设置等长规则")},
+         "check": lambda r: (("auto_verify", f"已自动识别 {r.get('diff_pairs', 0)} 对差分并设置等长规则")
+                             if r.get("diff_pairs") else ("手动检查", "未识别到差分对，需人工确认"))},
     48: {"category": "high_speed", "desc": "3W原则",
-         "check": lambda r: ("auto_pass", "3W间距规则已设置")},
+         "check": lambda r: ("手动检查", "3W 间距需在 Allegro 中目视/DRC 确认")},
     49: {"category": "high_speed", "desc": "高速走线参考平面",
-         "check": lambda r: ("auto_pass", "参考完整GND/Power平面")},
+         "check": lambda r: ("手动检查", "参考平面完整性需人工目视确认")},
     50: {"category": "high_speed", "desc": "电容扇出",
-         "check": lambda r: ("auto_pass", "最小回路面积规则已设置")},
+         "check": lambda r: ("手动检查", "电容扇出回路需人工目视确认")},
     54: {"category": "high_speed", "desc": "SI约束",
-         "check": lambda r: ("auto_pass", "差分对/高速/BUS SI约束已设置")},
+         "check": lambda r: (("auto_verify", "已生成差分/高速/BUS 约束，需在 Allegro 加载后确认")
+                             if r.get("electrical_constraints") else ("手动检查", "未生成 SI 约束，需人工确认"))},
     63: {"category": "high_speed", "desc": "蛇形线间距",
-         "check": lambda r: ("auto_pass", "3W/5W蛇形线间距规则已设置")},
+         "check": lambda r: ("手动检查", "蛇形线间距需人工目视确认")},
     73: {"category": "emc", "desc": "走线角度",
-         "check": lambda r: ("auto_pass", "135°走线, RF弧形走线")},
+         "check": lambda r: ("手动检查", "走线角度需人工目视确认")},
     84: {"category": "power", "desc": "电源/GND载流",
-         "check": lambda r: ("auto_pass", "1A/mm outer, 0.5A/mm inner")},
+         "check": lambda r: ("手动检查", "载流能力需人工核算")},
     85: {"category": "power", "desc": "20H原则",
-         "check": lambda r: ("auto_pass", "电源层缩进地层")},
+         "check": lambda r: ("手动检查", "20H 原则需人工目视确认")},
     86: {"category": "power", "desc": "不同电源平面",
-         "check": lambda r: ("auto_pass", "相邻不同电源平面避免重叠")},
+         "check": lambda r: ("手动检查", "电源平面重叠需人工目视确认")},
     93: {"category": "keepout", "desc": "散热焊盘下方",
-         "check": lambda r: ("auto_pass", "禁布区规则已设置")},
+         "check": lambda r: ("手动检查", "禁布区需人工目视确认")},
     94: {"category": "keepout", "desc": "安装孔周围",
-         "check": lambda r: ("auto_pass", "≥4mm间距已设置")},
+         "check": lambda r: ("手动检查", "安装孔间距需人工目视确认")},
     95: {"category": "keepout", "desc": "NTH到铜皮",
-         "check": lambda r: ("auto_pass", "内层≥0.5mm, 外层≥0.3mm")},
+         "check": lambda r: ("手动检查", "NPTH 到铜皮间距需人工目视确认")},
     98: {"category": "keepout", "desc": "外层铜皮到板边",
-         "check": lambda r: ("auto_pass", "≥0.3mm")},
+         "check": lambda r: ("手动检查", "外层铜皮到板边需人工目视确认")},
     99: {"category": "keepout", "desc": "内层铜皮到板边",
-         "check": lambda r: ("auto_pass", "≥0.5mm")},
+         "check": lambda r: ("手动检查", "内层铜皮到板边需人工目视确认")},
     100: {"category": "route", "desc": "0402及以下出线",
-         "check": lambda r: ("auto_pass", "十字连接")},
+         "check": lambda r: ("手动检查", "小元件出线方式需人工目视确认")},
     101: {"category": "route", "desc": "SOIC/PLCC/QFP/SOT出线",
-         "check": lambda r: ("auto_pass", "从引脚长边出线")},
+         "check": lambda r: ("手动检查", "引脚出线方式需人工目视确认")},
     112: {"category": "via", "desc": "回流焊盘无过孔",
-         "check": lambda r: ("auto_pass", "孔盘≥0.5mm, 绿油≥0.1mm")},
+         "check": lambda r: ("手动检查", "回流焊盘过孔需人工目视确认")},
     113: {"category": "via", "desc": "过孔不过密",
-         "check": lambda r: ("auto_pass", "不破坏电源/GND平面完整性")},
+         "check": lambda r: ("手动检查", "过孔密度/平面完整性需人工目视确认")},
     117: {"category": "testpoint", "desc": "测试点直径",
-         "check": lambda r: ("auto_pass", "≥0.8mm, 边到边≥0.47mm")},
+         "check": lambda r: ("手动检查", "测试点直径需人工确认")},
     118: {"category": "testpoint", "desc": "测试点到器件焊盘",
-         "check": lambda r: ("auto_pass", "间距规则已设置")},
+         "check": lambda r: ("手动检查", "测试点到焊盘间距需人工确认")},
     119: {"category": "testpoint", "desc": "测试点到板边/定位孔",
-         "check": lambda r: ("auto_pass", "≥2.5mm/≥5mm")},
+         "check": lambda r: ("手动检查", "测试点到板边/定位孔需人工确认")},
     125: {"category": "drc", "desc": "所有DRC",
-         "check": lambda r: ("auto_verify", "需在Allegro中运行DRC检查")},
+         "check": lambda r: ("auto_verify", "需在 Allegro 中运行 DRC 检查")},
 }
 
 MANUAL_REQUIRED = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17,
@@ -113,8 +129,6 @@ def _read_checklist_rows(excel_path: str) -> List[dict]:
     sheet_names = [s.lower() for s in wb.sheetnames] # 获取所有工作表名称并转换为小写
     sheet_name = "check list" if "check list" in sheet_names else wb.sheetnames[-1]  # 如果存在名为"check list"的工作表，则使用它，否则使用最后一个工作表
     ws = wb[sheet_name] # 获取指定工作表对象
-    wb.close() 
-
     header_row = 3 #头
     rows = [] #行
     current_category = ""  #当前类别
@@ -165,13 +179,13 @@ def _read_checklist_rows(excel_path: str) -> List[dict]:
             "approved": approved_val if approved_val and approved_val != "None" else "",
         })
 
+    wb.close()
     return rows
 
 
-def _determine_check_result(item: dict, brd_info: dict, analysis_result: dict) -> Tuple[str, str, str]:
+def _determine_check_result(item: dict, analysis_result: dict) -> Tuple[str, str, str]:
     item_no = item["no"] 
     standard = item["standard"] 
-    grade_type = item["grade_type"]
     item_text = item["items"]
 
     if standard.upper() == "NA":
@@ -221,7 +235,7 @@ def auto_fill_checklist(
     output_path: str,
     checker_name: str = "BRD-AI",
     static_approver: str = "",
-) -> str:
+) -> Tuple[str, dict]:
     rows = _read_checklist_rows(checklist_path)
     analysis = _analyze_brd_for_checklist(brd_info, classification, constraints, dfm_result)
 
@@ -236,7 +250,7 @@ def auto_fill_checklist(
     for item in rows:
         item_no = item["no"]
         row_idx = item["row_idx"]
-        result, detail, method = _determine_check_result(item, brd_info, analysis)
+        result, detail, method = _determine_check_result(item, analysis)
 
         if result == "OK" or result == "auto_pass":
             check_text = "PASS"
@@ -301,7 +315,7 @@ def auto_fill_checklist(
     summary_ws.cell(new_row, 3, value=checker_name).font = Font(name="Arial", size=10)
     summary_ws.cell(new_row, 4, value=f"Auto-fill: {stats['auto_pass']}PASS/{stats['manual']}MANUAL/{stats['na']}NA/{stats['total']}TOTAL").font = Font(name="Arial", size=10)
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     wb.save(output_path)
     wb.close()
 
@@ -336,7 +350,7 @@ def generate_checklist_summary(stats: dict, output_path: str) -> str:
     lines.append("=" * 60)
 
     content = "\n".join(lines)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(content)
     return output_path

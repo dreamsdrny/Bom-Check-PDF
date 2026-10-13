@@ -48,6 +48,13 @@ LEVEL_ALIASES = {
 }
 
 _DB_CACHE: Dict[str, dict] = {}
+_DB_CACHE_MTIME: Dict[str, Optional[float]] = {}
+
+
+def clear_capability_cache() -> None:
+    """清空制程能力库缓存 (修改 config/*.yaml 后可调用以强制重载)"""
+    _DB_CACHE.clear()
+    _DB_CACHE_MTIME.clear()
 
 
 def _load_yaml(filename: str) -> dict:
@@ -72,14 +79,22 @@ def normalize_factory(factory: str) -> str:
 
 def load_capability_db(factory: str = DEFAULT_FACTORY) -> dict:
     factory = normalize_factory(factory)
-    if factory in _DB_CACHE:
-        return _DB_CACHE[factory]
-    filename = FACTORY_FILES.get(factory, "dfm_capability.yaml")
+    filename = FACTORY_FILES.get(factory, FACTORY_FILES[DEFAULT_FACTORY])
     config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
-    if not os.path.exists(os.path.join(config_dir, filename)):
-        filename = "dfm_capability.yaml"   # 回退到默认能力库
+    path = os.path.join(config_dir, filename)
+    if not os.path.exists(path):
+        filename = FACTORY_FILES[DEFAULT_FACTORY]   # 回退到默认(板厂A)能力库
+        path = os.path.join(config_dir, filename)
+    try:
+        mtime: Optional[float] = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    cached = _DB_CACHE.get(factory)
+    if cached is not None and _DB_CACHE_MTIME.get(factory) == mtime:
+        return cached
     db = _load_yaml(filename)
     _DB_CACHE[factory] = db
+    _DB_CACHE_MTIME[factory] = mtime
     return db
 
 

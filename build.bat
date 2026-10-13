@@ -21,7 +21,8 @@ python -m PyInstaller --clean --noconfirm ^
     --name="BRD-AI" ^
     --windowed ^
     --add-data="config/checklist_rules.yaml;config" ^
-    --add-data="config/dfm_capability.yaml;config" ^
+    --add-data="config/dfm_capability_hongban.yaml;config" ^
+    --add-data="config/dfm_capability_sihui.yaml;config" ^
     --hidden-import=openpyxl ^
     --hidden-import=openpyxl.cell ^
     --hidden-import=openpyxl.styles ^

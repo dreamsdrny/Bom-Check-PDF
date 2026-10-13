@@ -8,20 +8,22 @@ Evan_DFM: PDF 导入 (平板设计参考)
     d = read_pdf("drawing.pdf")
     d["page_w_mm"], d["page_h_mm"], d["image"] (PIL.Image), d["text"]
 """
-from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def read_pdf(path: str, page: int = 0, dpi: int = 150) -> dict:
     try:
         try:
             import pymupdf as fitz  # 新版 PyMuPDF
-        except Exception:
+        except ImportError:
             import fitz  # 旧版
-    except Exception:
+    except ImportError:
         return {"error": "未安装 PyMuPDF (fitz), 无法读取 PDF", "image": None}
     try:
         from PIL import Image
-    except Exception:
+    except ImportError:
         Image = None
     try:
         doc = fitz.open(path)
@@ -38,14 +40,15 @@ def read_pdf(path: str, page: int = 0, dpi: int = 150) -> dict:
         text = ""
         try:
             text = pg.get_text()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PDF 文本提取失败: %s (%s)", path, exc)
         image = None
         if Image is not None:
             try:
                 pix = pg.get_pixmap(dpi=dpi)
                 image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PDF 栅格化失败: %s (%s)", path, exc)
                 image = None
         return {
             "page_w_mm": round(w_mm, 3),
@@ -58,12 +61,5 @@ def read_pdf(path: str, page: int = 0, dpi: int = 150) -> dict:
     finally:
         try:
             doc.close()
-        except Exception:
-            pass
-
-
-def pdf_first_page_size_mm(path: str) -> Optional[list]:
-    d = read_pdf(path, page=0, dpi=72)
-    if d.get("error"):
-        return None
-    return [d["page_w_mm"], d["page_h_mm"]]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("PDF 关闭失败: %s (%s)", path, exc)

@@ -2,12 +2,13 @@
 BRD-AI: Excel Checklist解析器
 直接从 Layout_Checklist_Rev1.0.xlsx 读取规则
 """
+import copy
 import re
 import openpyxl
 from typing import Dict, Any, List, Optional
 
 
-def _parse_value_with_unit(text: str) -> dict:
+def _parse_value_with_unit(text: str) -> Optional[dict]:
     if not text or not isinstance(text, str):
         return None
     result = {}
@@ -134,6 +135,8 @@ def read_checklist_excel(excel_path: str) -> dict:
             "note": note_text,
         })
 
+    wb.close()
+
     rules = {
         "spacing": {},
         "high_speed": {},
@@ -225,7 +228,7 @@ def read_checklist_excel(excel_path: str) -> dict:
 
 
 def merge_checklist_with_defaults(checklist_rules: dict, default_rules: dict) -> dict:
-    merged = dict(default_rules)
+    merged = copy.deepcopy(default_rules)
     extracted = checklist_rules.get("rules", {})
 
     for category in extracted:

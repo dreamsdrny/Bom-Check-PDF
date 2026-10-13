@@ -17,7 +17,7 @@ from src.signal_classifier import classify_and_export
 from src.rule_engine import compute_class_constraints
 from src.dfm_engine import validate_constraints
 from src.skill_generator import generate_skill_script
-from src.report_generator import generate_excel_report, generate_text_report
+from src.report_generator import generate_excel_report, generate_text_report, write_analysis_json
 from src.checklist_auto_fill import auto_fill_checklist, generate_checklist_summary
 from src.checklist_reader import read_checklist_excel
 
@@ -30,7 +30,8 @@ class BRD_AIGUI:
         else:
             self.root = tk.Toplevel(master)
         self.root.title("Evan_DFM - 分析BRD (Cadence Allegro)")
-        self.root.geometry("780x680")  #分辨率
+        from src.win_dpi import apply_window
+        apply_window(self.root, 780, 680)  #分辨率
         self.root.resizable(True, True) #设置窗口大小可变
 
         self.brd_path = tk.StringVar()   # BRD 文件路径
@@ -418,22 +419,7 @@ class BRD_AIGUI:
 
             json_path = os.path.join(out_dir, "constraint_data.json")
             os.makedirs(out_dir, exist_ok=True)
-            export_data = {
-                "board_info": {k: v for k, v in board_info.items() if k not in ("nets",)},
-                "classification": classification,
-                "constraints": {
-                    "physical": [
-                        {k: v for k, v in c.items() if k != "nets"}
-                        for c in constraints.get("physical_constraints", [])
-                    ],
-                    "spacing": constraints.get("spacing_constraints", []),
-                    "electrical": constraints.get("electrical_constraints", []),
-                    "via": constraints.get("via_constraints", []),
-                },
-                "dfm": dfm_result,
-            }
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
+            write_analysis_json(json_path, board_info, classification, constraints, dfm_result)
             self.root.after(0, lambda: self._log(f"  -> JSON:  {json_path}", "success"))
 
             # Step 7: Auto-fill Checklist (if enabled)
@@ -549,7 +535,8 @@ class DFMDialog:
 
         self.win = tk.Toplevel(master)
         self.win.title("DFM 功能分析 (制程能力校验)")
-        self.win.geometry("900x640")
+        from src.win_dpi import apply_window
+        apply_window(self.win, 900, 640)
 
         top = ttk.Frame(self.win, padding=8)
         top.pack(fill=tk.X)
@@ -745,7 +732,8 @@ class PanelDialog:
     def __init__(self, master):
         self.win = tk.Toplevel(master)
         self.win.title("自动拼板与成本优化")
-        self.win.geometry("560x520")
+        from src.win_dpi import apply_window
+        apply_window(self.win, 560, 520)
 
         form = ttk.LabelFrame(self.win, text="参数", padding=8)
         form.pack(fill=tk.X, padx=8, pady=8)
@@ -814,6 +802,12 @@ class PanelDialog:
 
 
 def main():
+    try:
+        from src.win_dpi import enable_dpi_awareness, set_app_user_model_id
+        enable_dpi_awareness()
+        set_app_user_model_id()
+    except Exception:
+        pass
     app = BRD_AIGUI()
     app.run()
 

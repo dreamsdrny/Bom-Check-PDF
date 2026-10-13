@@ -228,7 +228,7 @@ def _relay_issue(code_counter: Dict[str, int], category: str, rule: str,
 
 
 def _fabrication_extra_issues(design: dict, capability: dict,
-                              copper_um: float, copper_oz: float,
+                              copper_oz: float,
                               code_counter: Dict[str, int]) -> List[dict]:
     issues: List[dict] = []
     drill = capability.get("drill", {})
@@ -502,7 +502,7 @@ def build_issues(design: dict, capability: dict, items: List[dict]) -> List[dict
     copper_um = _num(design.get("copper_um")) or 35.0
     copper_oz = _num(design.get("copper_oz")) or max(1.0, round(copper_um / 35.0, 1))
 
-    issues += _fabrication_extra_issues(design, capability, copper_um, copper_oz, code_counter)
+    issues += _fabrication_extra_issues(design, capability, copper_oz, code_counter)
     issues += _assembly_issues(design, code_counter)
     issues += _panel_issues(design, capability, code_counter)
     issues.sort(key=lambda x: (SEVERITY_ORDER.get(x["severity"], 9), x["code"]))
@@ -635,4 +635,5 @@ def build_issue_report(design: dict, capability: dict, board_type: str,
         "issue_summary": summarize_issues(issues),
         "risk": risk,
         "info": info,
+        "info_stats": info,
     }

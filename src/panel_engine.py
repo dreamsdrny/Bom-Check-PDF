@@ -134,10 +134,6 @@ def _decorate_views(views: dict, p: dict) -> None:
                           "value": rail, "orient": "v", "label": "工艺边宽"})
 
 
-def to_mm_from_mil(mil_value: Optional[float]) -> Optional[float]:
-    return None if mil_value is None else round(mil_value * MIL_TO_MM, 4)
-
-
 DEFAULT_PARAMS = {
     "mode": "single",              # single | ab | mixed
     "arrangement": "forward",      # forward|rotate|staggered|mixed|mirror|hzdual
@@ -379,11 +375,11 @@ def _design_single(p) -> dict:
             })
 
     # 开料图 (Sheet): Panel -> 大板, 支持横直料
-    items_sheet = _layout_sheet(sheet_w, sheet_h, wpnl_w, wpnl_h, wpnl_gap, rail, arrangement)
+    items_sheet = _layout_sheet(sheet_w, sheet_h, wpnl_w, wpnl_h, wpnl_gap, rail)
 
     features_array = _process_features(items_set, set_w, set_h, p, "set")
     features_panel = _process_features(items_wpnl, wpnl_w, wpnl_h, p, "panel")
-    features_panel += _rail_frame_features(wpnl_w, wpnl_h, edge, set_w, set_h, p)
+    features_panel += _rail_frame_features(wpnl_w, wpnl_h, edge, p)
     features_panel += _impedance_between_arrays(items_wpnl, p)
 
     wpnl_per_sheet = len(items_sheet)
@@ -417,7 +413,7 @@ def _design_single(p) -> dict:
     return plan
 
 
-def _layout_sheet(sheet_w, sheet_h, wpnl_w, wpnl_h, gap, rail, arrangement="grid"):
+def _layout_sheet(sheet_w, sheet_h, wpnl_w, wpnl_h, gap, rail):
     # 工作稿(WPNL) 不旋转: 一律正排
     uw, uh = sheet_w - 2 * rail, sheet_h - 2 * rail
     items = []
@@ -486,23 +482,6 @@ def _process_features(items, cw, ch, p, level):
     return feats
 
 
-def _sheet_extra_features(sheet_w, sheet_h, items, rail):
-    """开料图附加: 方向标记 + 余料标注"""
-    feats = []
-    for it in items:
-        feats.append({"type": "direction", "x": round(it["x"] + 1.5, 3), "y": round(it["y"] + 1.5, 3)})
-    if items:
-        maxx = max(it["x"] + it["w"] for it in items)
-        maxy = max(it["y"] + it["h"] for it in items)
-        if maxx < sheet_w - rail - 0.5:
-            feats.append({"type": "leftover", "x": round(maxx, 3), "y": 0,
-                          "w": round(sheet_w - maxx, 3), "h": sheet_h})
-        if maxy < sheet_h - rail - 0.5:
-            feats.append({"type": "leftover", "x": 0, "y": round(maxy, 3),
-                          "w": round(maxx, 3), "h": round(sheet_h - maxy, 3)})
-    return feats
-
-
 def _impedance_between_arrays(items, p):
     """阻抗条: 放置在 ARRAY 之间的间距处; 数量/长/宽/间距 可自定义 (mm/mil)"""
     imp = p.get("impedance") or {}
@@ -534,7 +513,7 @@ def _impedance_between_arrays(items, p):
     return feats
 
 
-def _rail_frame_features(pw, ph, edge, set_w, set_h, p):
+def _rail_frame_features(pw, ph, edge, p):
     """工作稿图: 工艺边边框 + PCS/连板 与工艺边之间的连接筋 (默认 2.0mm)"""
     rail = _num(p.get("rail_mm"), 4.0)
     rib = _num(p.get("edge_rib_mm"), 2.0) or 2.0
@@ -558,21 +537,6 @@ def _rail_frame_features(pw, ph, edge, set_w, set_h, p):
                       "w": round(gap, 3), "h": rib})
         feats.append({"type": "rib", "x": round(pw - rail - gap, 3), "y": round(fy - rib / 2, 3),
                       "w": round(gap, 3), "h": rib})
-    return feats
-
-
-def _sheet_features(sheet_w, sheet_h, rail, p):
-    feats = []
-    mt = _num(p.get("mark_to_edge"), 3.5)
-    mc = int(_num(p.get("mark_count"), 3) or 3)
-    positions = [(mt, mt), (sheet_w - mt, mt), (sheet_w - mt, sheet_h - mt), (mt, sheet_h - mt)]
-    for i in range(min(mc, len(positions))):
-        feats.append({"type": "mark", "x": positions[i][0], "y": positions[i][1]})
-    tc = int(_num(p.get("tooling_count"), 2) or 2)
-    td = _num(p.get("tooling_d"), 3.0)
-    ty = [sheet_h * 0.25, sheet_h * 0.75]
-    for i in range(min(tc, len(ty))):
-        feats.append({"type": "tooling", "x": rail / 2, "y": ty[i], "d": td})
     return feats
 
 
@@ -625,7 +589,7 @@ def _design_multi(p, mode) -> dict:
                    "angle": pl.get("angle", 0.0), "orig_w": pl.get("orig_w"), "orig_h": pl.get("orig_h"),
                    "mirror": mirror and (i % 2 == 1)}
                   for i, pl in enumerate(placements)]
-    items_sheet = _layout_sheet(sheet_w, sheet_h, wpnl_w, wpnl_h, wpnl_gap, rail, arrangement)
+    items_sheet = _layout_sheet(sheet_w, sheet_h, wpnl_w, wpnl_h, wpnl_gap, rail)
     unit_items, ux, umaxh = [], 3.0, 0.0
     for k in kinds:
         unit_items.append({"x": round(ux, 3), "y": 3.0, "w": k["w"], "h": k["h"],
@@ -633,7 +597,7 @@ def _design_multi(p, mode) -> dict:
         ux += k["w"] + 6.0
         umaxh = max(umaxh, k["h"])
     feats_panel = _process_features(items_wpnl, wpnl_w, wpnl_h, p, "panel")
-    feats_panel += _rail_frame_features(wpnl_w, wpnl_h, edge, 0, 0, p)
+    feats_panel += _rail_frame_features(wpnl_w, wpnl_h, edge, p)
     feats_panel += _impedance_between_arrays(items_wpnl, p)
     views = {
         "pcs": _make_view("PCS 图 (各料号单板定义, 蓝=A 橙=B)", (ux, umaxh + 6.0), unit_items, []),
@@ -924,10 +888,3 @@ def render_plan_svgs(plan: dict, width: int = 520) -> Dict[str, str]:
         return {"pcs": "", "array": "", "panel": ""}
     views = plan["views"]
     return {k: render_view_svg(views[k], width) for k in ("pcs", "array", "panel")}
-
-
-def render_plan_combined_svg(plan: dict, width_each: int = 380) -> str:
-    if not plan.get("ok"):
-        return "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='80'><text x='10' y='40'>No plan</text></svg>"
-    svgs = render_plan_svgs(plan, width_each)
-    return "\n".join(svgs.values())

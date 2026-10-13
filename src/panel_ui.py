@@ -8,6 +8,7 @@ Evan_DFM: 排版(拼版)设计界面
 工艺边 / V-Cut / 邮票孔 / 折断边 / 阻抗条 / 铜箔开料 / Mark / 定位孔。
 """
 import json
+import logging
 import os
 import copy
 import tkinter as tk
@@ -17,12 +18,15 @@ from src.panel_engine import (design_panel, render_plan_svgs, rotated_corners, f
                               WPNL_OPTIONS_INCH, INCH_TO_MM, MIL_TO_MM, MM_TO_MIL,
                               ARRANGEMENT_TYPES, STACKUP_TYPES)
 
+logger = logging.getLogger(__name__)
+
 
 class PanelDesigner:
     def __init__(self, master):
         self.win = tk.Toplevel(master)
         self.win.title("Evan_DFM - 排版设计 (拼版)")
-        self.win.geometry("1180x760")
+        from src.win_dpi import apply_window
+        apply_window(self.win, 1180, 760)
 
         self.plan = None
         self.zoom = 1.0
@@ -218,8 +222,8 @@ class PanelDesigner:
         if self.plan:                          # 单位变化后按新单位重绘尺寸标注
             try:
                 self._run()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("单位切换后重绘失败: %s", exc)
 
     # ---------------- 右侧三图 ----------------
     def _build_right(self):
@@ -336,7 +340,6 @@ class PanelDesigner:
                     a, b = part.split(sep)[:2]
                     sizes.append([float(a), float(b)])
                 else:
-                    cur = p["wpnl_w"], p["wpnl_h"]
                     sizes.append([float(part), float(part)])
         if sizes:
             p["wpnl_sizes"] = sizes
@@ -724,7 +727,7 @@ class PanelDesigner:
             with open(os.path.join(out_dir, "panel_plan.json"), "w", encoding="utf-8") as f:
                 json.dump(self.plan, f, indent=2, ensure_ascii=False, default=str)
             messagebox.showinfo("导出完成",
-                                f"{out_dir}\npanel_set.svg / panel_wpnl.svg / panel_sheet.svg\npanel_plan.json")
+                                f"{out_dir}\npanel_pcs.svg / panel_array.svg / panel_panel.svg\npanel_plan.json")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("导出失败", str(exc))
 
@@ -770,7 +773,9 @@ class PanelDesigner:
                            f"{d['page_w_mm']:.1f}x{d['page_h_mm']:.1f}mm  页数 {d.get('page_count')}")
 
     def _backgrounds(self):
-        return {"sheet": self.pdf_bg} if self.pdf_bg is not None else None
+        # panel_export.render_plan_images 仅识别 pcs/array/panel 三个视图键;
+        # PDF 参考底图(开料/工作稿)叠加到 panel 视图
+        return {"panel": self.pdf_bg} if self.pdf_bg is not None else None
 
     def _export_png(self):
         if not self.plan or not self.plan.get("ok"):

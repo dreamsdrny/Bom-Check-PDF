@@ -8,12 +8,15 @@ Evan_DFM: 拼版输出 (图片 PNG / PDF)
 
 依赖: Pillow (PIL)。无需 reportlab / cairosvg。
 """
+import logging
 import os
 from typing import Dict, List, Optional
 
 from PIL import Image, ImageDraw
 
 from src.panel_engine import format_dim
+
+logger = logging.getLogger(__name__)
 
 _FEATURE_FILL = {
     "rib": (10, 122, 58),
@@ -61,8 +64,8 @@ def view_to_image(view: dict, width_px: int = 1300,
             b = bg.convert("RGB").resize((max(1, bw), max(1, bh)))
             base = img.crop((ox, oy, ox + max(1, bw), oy + max(1, bh)))
             img.paste(Image.blend(base, b, bg_opacity), (ox, oy))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("参考底图叠加失败, 已跳过: %s", exc)
 
     draw.rectangle([tx(0), ty(ch), tx(cw), ty(0)], outline=(50, 50, 50))
 
@@ -138,8 +141,8 @@ def view_to_image(view: dict, width_px: int = 1300,
             txm, tym = tx(it["x"] + it["w"] / 2), ty(it["y"] + it["h"] / 2)
             try:
                 draw.text((txm, tym), label, fill=outline, anchor="mm")
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("标签绘制失败, 已跳过: %s", exc)
 
     draw.text((margin, H - 20), view.get("title", ""), fill=(40, 40, 40))
     return img
@@ -167,7 +170,7 @@ def export_png(plan: dict, out_dir: str, width_px: int = 1300,
         im.save(p)
         paths[key] = p
     if imgs:
-        combined = _combine_vertical(list(imgs.values()), list(imgs.keys()))
+        combined = _combine_vertical(list(imgs.values()))
         cp = os.path.join(out_dir, "panel_all.png")
         combined.save(cp)
         paths["all"] = cp
@@ -182,7 +185,7 @@ def export_pdf(plan: dict, out_path: str, width_px: int = 1400,
     if not imgs:
         return out_path
     if combined:
-        page = _combine_vertical(list(imgs.values()), list(imgs.keys()))
+        page = _combine_vertical(list(imgs.values()))
         page.save(out_path, "PDF", resolution=150.0)
     else:
         pages = [im.convert("RGB") for im in imgs.values()]
@@ -190,7 +193,7 @@ def export_pdf(plan: dict, out_path: str, width_px: int = 1400,
     return out_path
 
 
-def _combine_vertical(images: List[Image.Image], labels: List[str]) -> Image.Image:
+def _combine_vertical(images: List[Image.Image]) -> Image.Image:
     width = max(im.width for im in images)
     total_h = sum(im.height for im in images)
     canvas = Image.new("RGB", (width, total_h), (255, 255, 255))

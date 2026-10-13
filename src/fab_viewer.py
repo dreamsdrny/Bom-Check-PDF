@@ -10,7 +10,6 @@ BRD-AI: 图形化交叉定位高亮 (Gerber/ODB++ 版图 + DFM 问题)
           点击版图上的问题标记 -> 选中对应问题行
 """
 import hashlib
-import math
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -137,14 +136,6 @@ def _write(path: str, content: str):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-
-
-def _iter_points(fab_data: List[dict]):
-    for d, p in _iter_primitives(fab_data):
-        if p.get("x1") is not None:
-            yield p["x1"], p["y1"]
-        if p.get("x2") is not None:
-            yield p["x2"], p["y2"]
 
 
 class FabViewer:

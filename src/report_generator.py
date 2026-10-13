@@ -2,11 +2,42 @@
 BRD-AI: 报告生成器 (Module 6)
 生成约束报告、DFM报告、汇总报告 (Excel)
 """
+import json
 import os
 from datetime import datetime
 from typing import Dict, Any, List
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+
+def build_export_data(board_info: dict, signal_classification: dict,
+                      constraints: dict, dfm_result: dict) -> dict:
+    """构造分析结果导出结构 (main.py 与 gui.py 共用, 避免重复)"""
+    return {
+        "board_info": {k: v for k, v in board_info.items() if k not in ("nets",)},
+        "classification": signal_classification,
+        "constraints": {
+            "physical": [
+                {k: v for k, v in c.items() if k != "nets"}
+                for c in constraints.get("physical_constraints", [])
+            ],
+            "spacing": constraints.get("spacing_constraints", []),
+            "electrical": constraints.get("electrical_constraints", []),
+            "via": constraints.get("via_constraints", []),
+        },
+        "dfm": dfm_result,
+    }
+
+
+def write_analysis_json(output_path: str, board_info: dict,
+                        signal_classification: dict, constraints: dict,
+                        dfm_result: dict) -> str:
+    """将分析结果写入 JSON 文件, 返回文件路径"""
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(build_export_data(board_info, signal_classification, constraints, dfm_result),
+                  f, indent=2, ensure_ascii=False, default=str)
+    return output_path
 
 
 def generate_excel_report(
@@ -20,7 +51,6 @@ def generate_excel_report(
 
     header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
-    pass_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     warn_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
     error_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     thin_border = Border(
@@ -189,7 +219,7 @@ def generate_excel_report(
                     style_data(ws_chk, row, len(headers))
                     row += 1
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     wb.save(output_path)
     return output_path
 
@@ -250,7 +280,7 @@ def generate_text_report(
     lines.append("=" * 60)
 
     content = "\n".join(lines)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(content)
     return output_path

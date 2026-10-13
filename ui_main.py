@@ -19,13 +19,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gui import BRD_AIGUI, DFMDialog, PanelDialog
 from src.panel_ui import PanelDesigner
 from src.gerber_viewer import GerberViewer
+from src.win_dpi import apply_window, enable_dpi_awareness, set_app_user_model_id
 
 
 class MainLauncher:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Evan_DFM: PCB DFM & Constraint Generator")
-        self.root.geometry("760x560")
+        apply_window(self.root, 760, 560)
         self.root.resizable(True, True)
         self._windows = {}
         self._build_ui()
@@ -112,7 +113,7 @@ class FabWindow:
         title = "Evan_DFM - 分析ODB++" if self.is_odb else "Evan_DFM - 分析Gerber"
         self.win = tk.Toplevel(master)
         self.win.title(title)
-        self.win.geometry("940x680")
+        apply_window(self.win, 940, 680)
 
         top = ttk.Frame(self.win, padding=10)
         top.pack(fill=tk.X)
@@ -278,6 +279,11 @@ class FabWindow:
 
 
 def main():
+    try:
+        enable_dpi_awareness()
+        set_app_user_model_id()
+    except Exception:
+        pass
     app = MainLauncher()
     app.run()
 

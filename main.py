@@ -21,7 +21,7 @@ from src.signal_classifier import classify_and_export
 from src.rule_engine import compute_class_constraints
 from src.dfm_engine import validate_constraints
 from src.skill_generator import generate_skill_script
-from src.report_generator import generate_excel_report, generate_text_report
+from src.report_generator import generate_excel_report, generate_text_report, write_analysis_json
 from src.checklist_reader import read_checklist_excel, merge_checklist_with_defaults
 from src.checklist_auto_fill import auto_fill_checklist, generate_checklist_summary
 
@@ -197,23 +197,7 @@ def run_pipeline(
     print(f"  -> Text:  {text_path}")
 
     json_path = os.path.join(output_dir, "constraint_data.json")
-    os.makedirs(output_dir, exist_ok=True)
-    export_data = {
-        "board_info": {k: v for k, v in board_info.items() if k not in ("nets",)},
-        "classification": classification,
-        "constraints": {
-            "physical": [
-                {k: v for k, v in c.items() if k != "nets"}
-                for c in constraints.get("physical_constraints", [])
-            ],
-            "spacing": constraints.get("spacing_constraints", []),
-            "electrical": constraints.get("electrical_constraints", []),
-            "via": constraints.get("via_constraints", []),
-        },
-        "dfm": dfm_result,
-    }
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
+    write_analysis_json(json_path, board_info, classification, constraints, dfm_result)
     print(f"  -> JSON:  {json_path}")
 
     print()

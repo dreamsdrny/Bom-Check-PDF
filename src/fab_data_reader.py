@@ -15,11 +15,14 @@ BRD-AI: 制造数据读取与完整性检查 (Gerber / ODB++ / NC Drill)
 
 说明: 解析为 best-effort, 覆盖生产常见写法; 复杂宏/嵌套区域按近似处理。
 """
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.dfm_rules import make_issue
+
+logger = logging.getLogger(__name__)
 
 MIL_TO_MM = 0.0254
 INCH_TO_MM = 25.4
@@ -114,6 +117,8 @@ def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
     cur_x = cur_y = 0.0
     interp = 1
     cur_op = 1
+    in_macro = False
+    cur_negative = False
     in_region = False
     region_pts: List[Tuple[float, float]] = []
     cur_net = ""
@@ -124,7 +129,7 @@ def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
     def finalize_segment(x1, y1, x2, y2, ap_code, kind="draw", width_mm=None):
         prim = {
             "type": kind, "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "aperture": ap_code, "width": width_mm,
+            "aperture": ap_code, "width": width_mm, "clear": cur_negative,
             "net": cur_net or "", "refdes": cur_refdes or "",
             "pin": cur_pin or "", "layer": res.file_name,
         }
@@ -197,8 +202,21 @@ def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
                 cur_pin = ""
             continue
         if line.startswith("%LPC"):
+            cur_negative = True
             continue
         if line.startswith("%LPD"):
+            cur_negative = False
+            continue
+        if line.startswith("%AM"):
+            in_macro = True
+            if line.count("%") >= 2:
+                in_macro = False
+            continue
+        if in_macro:
+            if "%" in line:
+                in_macro = False
+            continue
+        if line.startswith("%"):
             continue
         if cmd.startswith("G36"):
             in_region = True
@@ -221,29 +239,43 @@ def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
                 res.feature_count += 1
             region_pts = []
             continue
-        md = re.match(r"^D(\d+)$", cmd)
-        if md:
-            code = int(md.group(1))
-            if code >= 10:
-                cur_ap = code
+        if cmd.startswith("M"):
             continue
-        if re.match(r"^G0[123]", cmd):
-            interp = int(cmd[2])
-            rest = cmd[3:]
-            if rest:
-                line = rest
-                cmd = rest
-            else:
-                continue
-        if re.match(r"^G7[45]", cmd) or re.match(r"^G0[45]", cmd):
+        # ---- G 代码 (模态) ----
+        gcodes = [int(g) for g in re.findall(r"G(\d+)", cmd)]
+        if 4 in gcodes:                      # G04 = 注释
             continue
-        m = re.match(r"^(?:G0[123])?X(" + _NUM + r")?Y(" + _NUM + r")?(?:I(" + _NUM + r")?J(" + _NUM + r")?)?D0?([123])$", cmd)
+        for g in gcodes:
+            if g in (1, 2, 3):
+                interp = g
+            elif g == 70:
+                unit = "inch"
+                res.unit = unit
+            elif g == 71:
+                unit = "mm"
+                res.unit = unit
+        # ---- 光圈选择 (Dnn, nn>=10) ----
+        for dm in re.finditer(r"D(\d+)", cmd):
+            n = int(dm.group(1))
+            if n >= 10:
+                cur_ap = n
+        # ---- 操作码 D01/D02/D03 (模态) ----
+        dops = [int(dm.group(1)) for dm in re.finditer(r"D(\d+)", cmd)
+                if int(dm.group(1)) in (1, 2, 3)]
+        if dops:
+            cur_op = dops[-1]
+        # ---- 坐标 X/Y/I/J (省略 = 沿用当前值) ----
+        mx = re.search(r"X(" + _NUM + r")", cmd)
+        my = re.search(r"Y(" + _NUM + r")", cmd)
+        mi = re.search(r"I(" + _NUM + r")", cmd)
+        mj = re.search(r"J(" + _NUM + r")", cmd)
+        m = mx or my or mi or mj
         if m:
-            x = _coord_to_mm(m.group(1), int_digits, dec_digits, unit) if m.group(1) else None
-            y = _coord_to_mm(m.group(2), int_digits, dec_digits, unit) if m.group(2) else None
-            i_off = _coord_to_mm(m.group(3), int_digits, dec_digits, unit) if m.group(3) else None
-            j_off = _coord_to_mm(m.group(4), int_digits, dec_digits, unit) if m.group(4) else None
-            op = int(m.group(5))
+            x = _coord_to_mm(mx.group(1), int_digits, dec_digits, unit) if mx else None
+            y = _coord_to_mm(my.group(1), int_digits, dec_digits, unit) if my else None
+            i_off = _coord_to_mm(mi.group(1), int_digits, dec_digits, unit) if mi else None
+            j_off = _coord_to_mm(mj.group(1), int_digits, dec_digits, unit) if mj else None
+            op = cur_op
             nx = x if x is not None else cur_x
             ny = y if y is not None else cur_y
             if in_region:
@@ -626,15 +658,17 @@ def read_fab_data(path) -> List[dict]:
 
 def _read_single(path: str) -> List[dict]:
     low = path.lower()
-    if low.endswith(".drl") or "drill" in low or "npt" in low or low.endswith(".txt") and "drl" in low:
+    if low.endswith(".drl") or "drill" in low or "npt" in low:
         try:
             return [parse_excellon(path)]
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("解析钻孔文件失败, 已跳过: %s (%s)", path, exc)
             return []
     if low.endswith((".gbr", ".ger", ".art", ".pho")) or _looks_like_gerber(path):
         try:
             return [parse_gerber(path)]
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("解析 Gerber 文件失败, 已跳过: %s (%s)", path, exc)
             return []
     return []
 
@@ -644,7 +678,8 @@ def _looks_like_gerber(path: str) -> bool:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             head = f.read(4096)
         return "%FS" in head or "%MO" in head or "%ADD" in head or "G04" in head
-    except Exception:
+    except OSError as exc:
+        logger.debug("探测 Gerber 文件失败: %s (%s)", path, exc)
         return False
 
 

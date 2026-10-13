@@ -10,8 +10,18 @@ Evan_DFM: DXF 导入 (平板/外形设计)
     d["outline"]  -> [(x,y), ...]  mm (归一化到原点)
     d["bbox"]     -> [w, h] mm
 """
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
+
+# DXF $INSUNITS -> mm 换算系数
+_INSUNITS_TO_MM = {
+    "1": 25.4,      # inch
+    "2": 304.8,     # feet
+    "4": 1.0,       # mm
+    "5": 10.0,      # cm
+    "6": 1000.0,    # m
+    "0": 1.0,       # unitless
+    "": 1.0,
+}
 
 
 def _num(s):
@@ -34,7 +44,7 @@ def read_dxf(path: str) -> dict:
     unit_scale = 1.0
     for code, val in pairs:
         if code == "$INSUNITS":
-            unit_scale = 25.4 if val == "1" else (1.0 if val in ("4", "0", "") else 1.0)
+            unit_scale = _INSUNITS_TO_MM.get(val, 1.0)
 
     polylines: List[dict] = []
     segments: List[Tuple[float, float, float, float]] = []
@@ -163,16 +173,3 @@ def _polygon_area(pts: List[Tuple[float, float]]) -> float:
         x2, y2 = pts[(i + 1) % n]
         a += x1 * y2 - x2 * y1
     return a / 2.0
-
-
-def dxf_to_svg(outline: List[Tuple[float, float]], width: int = 300) -> str:
-    if not outline:
-        return "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='40'><text x='5' y='25'>No outline</text></svg>"
-    xs = [p[0] for p in outline]
-    ys = [p[1] for p in outline]
-    w = max(xs) - min(xs) or 1
-    h = max(ys) - min(ys) or 1
-    s = width / max(w, h)
-    pts = " ".join(f"{(x-min(xs))*s+5:.1f},{(h-(y-min(ys)))*s+5:.1f}" for x, y in outline)
-    return (f"<svg xmlns='http://www.w3.org/2000/svg' width='{w*s+10:.0f}' height='{h*s+10:.0f}'>"
-            f"<polygon points='{pts}' fill='#c6e0b4' stroke='#385723'/></svg>")
