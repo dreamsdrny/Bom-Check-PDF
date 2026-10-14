@@ -129,12 +129,13 @@ def make_issue(code: str, category: str, rule: str, severity: str,
                measured: Any = None, required: Any = None, unit: str = "",
                layer: str = "", from_: str = "", to: str = "",
                x: Any = None, y: Any = None, status: str = "打开",
-               count: int = 1, note: str = "") -> dict:
+               count: int = 1, note: str = "", net: str = "") -> dict:
     severity = severity if severity in SEVERITY_ORDER else "中"
     return {
         "code": code,
         "category": category,
         "rule": rule,
+        "net": net,
         "layer": layer or DIRECTION_HINT.get(category, ""),
         "from": from_,
         "to": to,

@@ -20,6 +20,7 @@ from src.skill_generator import generate_skill_script
 from src.report_generator import generate_excel_report, generate_text_report, write_analysis_json
 from src.checklist_auto_fill import auto_fill_checklist, generate_checklist_summary
 from src.checklist_reader import read_checklist_excel
+from src.branding import win_title
 
 
 class BRD_AIGUI: 
@@ -29,7 +30,7 @@ class BRD_AIGUI:
             self.root = tk.Tk()  #主界面
         else:
             self.root = tk.Toplevel(master)
-        self.root.title("Evan_DFM - 分析BRD (Cadence Allegro)")
+        self.root.title(win_title("分析BRD (Cadence Allegro)"))
         from src.win_dpi import apply_window
         apply_window(self.root, 780, 680)  #分辨率
         self.root.resizable(True, True) #设置窗口大小可变
@@ -106,6 +107,9 @@ class BRD_AIGUI:
 
         ttk.Button(opt_frame, text="DFM 功能分析", command=self._open_dfm_dialog).grid(
             row=1, column=7, columnspan=2, padx=5, pady=(6, 0), sticky=tk.E)
+
+        ttk.Button(opt_frame, text="分析BRD-DFM", command=self._open_brd_dfm).grid(
+            row=1, column=5, columnspan=2, padx=5, pady=(6, 0), sticky=tk.E)
 
         ttk.Button(opt_frame, text="制造数据DFM", command=self._open_fab_dialog).grid(
             row=2, column=6, padx=2, pady=(6, 0), sticky=tk.E)
@@ -214,6 +218,10 @@ class BRD_AIGUI:
 
     def _open_dfm_dialog(self):
         DFMDialog(self.root)
+
+    def _open_brd_dfm(self):
+        from src.brd_dfm_ui import BrdDFMWindow
+        BrdDFMWindow(self.root)
 
     def _open_fab_dialog(self):
         from src.fab_data_reader import analyze_fab

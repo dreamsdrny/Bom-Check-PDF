@@ -325,8 +325,116 @@ Examples:
         "--view", action="store_true",
         help="打开图形化交叉定位查看器 (配合 --fab)"
     )
+    parser.add_argument(
+        "--skill-export", type=str, default=None, nargs="?", const="auto",
+        dest="skill_export", metavar="PATH",
+        help="写出 Allegro SKILL 数据导出脚本 brd_dfm_export.il (在 Allegro 内运行导出带XY的几何/网表)"
+    )
+    parser.add_argument(
+        "--brd-dfm", type=str, default=None, dest="brd_dfm", metavar="BRD_OR_JSON",
+        help="BRD DFM: 传入 .brd(自动用 Cadence extracta 无界面提取) 或 SKILL 导出的 .json, "
+             "做几何DFM(定位XY)+开短路+网表测试, 输出 Valor 式报告"
+    )
 
     args = parser.parse_args()
+
+    if args.skill_export is not None:
+        from src.skill_export import write_export_skill, EXPORT_SKILL_FILENAME
+        if args.skill_export == "auto":
+            out_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+            os.makedirs(out_dir, exist_ok=True)
+            path = write_export_skill(os.path.join(out_dir, EXPORT_SKILL_FILENAME))
+        else:
+            path = write_export_skill(args.skill_export)
+        print("=" * 70)
+        print("  Allegro SKILL 数据导出脚本已写出")
+        print("=" * 70)
+        print(f"  文件: {path}")
+        print("  用法: 在 Allegro PCB Editor 打开 .brd, Command 窗口执行:")
+        print(f'        skill load "{os.path.basename(path)}"')
+        print("        brdExportJSON            ; 导出到 .brd 同目录")
+        print('        或 (brdExportJSON "D:/out/brd_export.json")')
+        print("  然后把导出的 JSON 传给:  python main.py --brd-dfm <export.json>")
+        return
+
+    if args.brd_dfm:
+        from src.brd_dfm import analyze_brd_dfm, analyze_brd_file
+        from src.dfm_report import generate_dfm_excel, generate_dfm_text
+        src_path = args.brd_dfm
+        if not os.path.exists(src_path):
+            print(f"[ERROR] 文件不存在: {src_path}")
+            print("        支持 .brd (需本机 Allegro extracta 无界面提取) 或 SKILL 导出的 .json。")
+            sys.exit(1)
+        out_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+        if src_path.lower().endswith(".brd"):
+            print("[1/2] 用 Cadence extracta 无界面提取 .brd (网表/几何/DRC/叠层), 约需 1-2 分钟...")
+            try:
+                result = analyze_brd_file(
+                    src_path, factory=args.factory, board_type=args.board_type,
+                    capability_level=args.capability, copper_um=args.copper,
+                    copper_oz=args.copper_oz, fab_path=args.fab,
+                    json_out=os.path.join(out_dir, "brd_export.json"))
+            except RuntimeError as exc:
+                print(f"[ERROR] {exc}")
+                print("        可改用 SKILL 导出: python main.py --skill-export  然后在 Allegro 内运行。")
+                sys.exit(1)
+            print("[2/2] DFM 分析 (几何定位XY + 开短路 + 网表)...")
+        else:
+            result = analyze_brd_dfm(
+                src_path, factory=args.factory, board_type=args.board_type,
+                capability_level=args.capability, copper_um=args.copper,
+                copper_oz=args.copper_oz, fab_path=args.fab)
+        gs = result["geometry_stats"]
+        nl = result["netlist_summary"]
+        summary = result["issue_summary"]
+        risk = result.get("risk", {})
+        print("=" * 70)
+        print(f"  BRD DFM 分析: {result['board_meta'].get('board_name','')}")
+        print("=" * 70)
+        print(f"  {result['factory_label']} {result['board_type_label']} - "
+              f"{result['capability_label']} (铜厚 {result['copper_um']}um)")
+        print(f"  网络 {gs['net_count']} / 节点 {gs['node_count']} / 器件 {gs['component_count']} / "
+              f"过孔 {gs['via_count']} / 焊盘 {gs['pad_count']} / 走线 {gs['cline_count']}")
+        print(f"  开短路: 开路网络 {nl['open_net_count']} / 短路网络对 {nl['short_net_count']} / "
+              f"无铜节点 {nl['nodes_without_copper']} / 物理连通域 {nl['physical_component_count']}")
+        if nl.get("fab_compare"):
+            fc = nl["fab_compare"]
+            print(f"  CAD vs FAB: CAD {fc['cad_net_count']} / FAB {fc['fab_net_count']} 网络, "
+                  f"Open {fc['open_count']} / Short {fc['short_count']} "
+                  f"({'PASS' if fc['passed'] else 'FAIL'})")
+        print("-" * 70)
+        print(f"  问题总数 {summary.get('总计',0)}: 危险 {summary.get('危险',0)} / "
+              f"高 {summary.get('高',0)} / 中 {summary.get('中',0)} / 低 {summary.get('低',0)}")
+        print(f"  可制造性评分 {risk.get('score','-')}/100  风险 {risk.get('risk_level','-')}  "
+              f"{risk.get('verdict','')}")
+        print("-" * 70)
+        for it in result["issues"]:
+            xy = f" @({it['x']:.2f},{it['y']:.2f})" if it.get("x") is not None else ""
+            print(f"  [{it['severity']}] {it['code']} {it['rule']} x{it.get('count',1)}{xy}")
+            print(f"        {it['description']}")
+        board_meta = result.get("board_meta", {})
+        xlsx_out = generate_dfm_excel(result, os.path.join(out_dir, "brd_dfm_report.xlsx"), board_meta)
+        txt_out = generate_dfm_text(result, os.path.join(out_dir, "brd_dfm_report.txt"), board_meta)
+        json_out = os.path.join(out_dir, "brd_dfm_analysis.json")
+        slim = {k: v for k, v in result.items() if k not in ("fab_data", "instances")}
+        slim["instance_count"] = len(result.get("instances", []))
+        with open(json_out, "w", encoding="utf-8") as f:
+            json.dump(slim, f, indent=2, ensure_ascii=False, default=str)
+        print("-" * 70)
+        print(f"  DFM报告(Excel): {xlsx_out}")
+        print(f"  DFM报告(Text):  {txt_out}")
+        print(f"  分析结果(JSON): {json_out}")
+        if args.view:
+            import tkinter as tk
+            from src.fab_viewer import FabViewer
+            root = tk.Tk()
+            root.withdraw()
+            FabViewer(root, result["fab_data"], result.get("instances", []),
+                      title="BRD DFM 交叉定位")
+            root.mainloop()
+        return
+
 
     if args.panelize:
         from src.panelizer import optimize_panel, panel_svg

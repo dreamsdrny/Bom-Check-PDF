@@ -17,6 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 from src.panel_engine import (design_panel, render_plan_svgs, rotated_corners, format_dim,
                               WPNL_OPTIONS_INCH, INCH_TO_MM, MIL_TO_MM, MM_TO_MIL,
                               ARRANGEMENT_TYPES, STACKUP_TYPES)
+from src.branding import win_title
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 class PanelDesigner:
     def __init__(self, master):
         self.win = tk.Toplevel(master)
-        self.win.title("Evan_DFM - 排版设计 (拼版)")
+        self.win.title(win_title("排版设计 (拼版)"))
         from src.win_dpi import apply_window
         apply_window(self.win, 1180, 760)
 

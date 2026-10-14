@@ -1,0 +1,76 @@
+{
+  "format": "brd-dfm-export",
+  "version": "1.0",
+  "tool": "Cadence Allegro PCB Editor",
+  "source": "DEMO-2L_SAMPLE",
+  "units": "mm",
+  "source_units": "millimeter",
+  "board": {
+    "name": "DEMO-2L_SAMPLE",
+    "revision": "A",
+    "thickness_mm": 1.6,
+    "layer_count": 2
+  },
+  "outline": [[0,0],[50,0],[50,40],[0,40]],
+  "stackup": [
+    {"layer":"TOP","type":"signal"},
+    {"layer":"BOTTOM","type":"signal"}
+  ],
+  "nets": [
+    {"name":"GND","nodes":[
+      {"refdes":"R1","pin":"1","x":10,"y":10,"layer":"TOP"},
+      {"refdes":"R2","pin":"1","x":10,"y":20,"layer":"TOP"}
+    ]},
+    {"name":"SIG1","nodes":[
+      {"refdes":"U1","pin":"1","x":30,"y":10,"layer":"TOP"},
+      {"refdes":"U1","pin":"2","x":30,"y":12,"layer":"TOP"}
+    ]},
+    {"name":"OPEN_NET","nodes":[
+      {"refdes":"J1","pin":"1","x":40,"y":30,"layer":"TOP"},
+      {"refdes":"J1","pin":"2","x":45,"y":35,"layer":"TOP"}
+    ]},
+    {"name":"SHORT_A","nodes":[
+      {"refdes":"C1","pin":"1","x":20,"y":20,"layer":"TOP"}
+    ]},
+    {"name":"SHORT_B","nodes":[
+      {"refdes":"C1","pin":"2","x":20,"y":20.05,"layer":"TOP"}
+    ]}
+  ],
+  "components": [
+    {"refdes":"R1","package":"RESC1005","x":10,"y":10,"rotation":0,"side":"TOP","pins":2},
+    {"refdes":"R2","package":"RESC1005","x":10,"y":20,"rotation":0,"side":"TOP","pins":2},
+    {"refdes":"U1","package":"SOT23","x":30,"y":11,"rotation":0,"side":"TOP","pins":3},
+    {"refdes":"J1","package":"HDR2","x":42,"y":32,"rotation":0,"side":"TOP","pins":2},
+    {"refdes":"C1","package":"CAPC1005","x":20,"y":20,"rotation":0,"side":"TOP","pins":2}
+  ],
+  "clines": [
+    {"net":"GND","layer":"TOP","width":0.20,"points":[[10,10],[10,20]]},
+    {"net":"SIG1","layer":"TOP","width":0.05,"points":[[30,10],[30,12]]},
+    {"net":"SIG2","layer":"TOP","width":0.15,"points":[[30,15],[48,15]]},
+    {"net":"SIG3","layer":"TOP","width":0.15,"points":[[30,15.2],[48,15.2]]}
+  ],
+  "vias": [
+    {"net":"GND","x":10,"y":15,"drill_mm":0.30,"pad_mm":0.60,"padstack":"VIA60","start_layer":"TOP","end_layer":"BOTTOM","type":"through"},
+    {"net":"SIG1","x":30,"y":11,"drill_mm":0.35,"pad_mm":0.45,"padstack":"VIA45","start_layer":"TOP","end_layer":"BOTTOM","type":"through"},
+    {"net":"GND","x":35,"y":25,"drill_mm":0.15,"pad_mm":0.50,"padstack":"VIA50","start_layer":"TOP","end_layer":"BOTTOM","type":"through"}
+  ],
+  "pads": [
+    {"refdes":"R1","pin":"1","net":"GND","x":10,"y":10,"layer":"TOP","padstack":"SMD60","is_smd":true,"pad_w":0.6,"pad_h":0.6,"drill_mm":0},
+    {"refdes":"R2","pin":"1","net":"GND","x":10,"y":20,"layer":"TOP","padstack":"SMD60","is_smd":true,"pad_w":0.6,"pad_h":0.6,"drill_mm":0},
+    {"refdes":"U1","pin":"1","net":"SIG1","x":30,"y":10,"layer":"TOP","padstack":"SMD30","is_smd":true,"pad_w":0.3,"pad_h":0.3,"drill_mm":0},
+    {"refdes":"U1","pin":"2","net":"SIG1","x":30,"y":12,"layer":"TOP","padstack":"SMD30","is_smd":true,"pad_w":0.3,"pad_h":0.3,"drill_mm":0},
+    {"refdes":"J1","pin":"1","net":"OPEN_NET","x":40,"y":30,"layer":"TOP","padstack":"SMD50","is_smd":true,"pad_w":0.5,"pad_h":0.5,"drill_mm":0},
+    {"refdes":"J1","pin":"2","net":"OPEN_NET","x":45,"y":35,"layer":"TOP","padstack":"SMD50","is_smd":true,"pad_w":0.5,"pad_h":0.5,"drill_mm":0},
+    {"refdes":"C1","pin":"1","net":"SHORT_A","x":20,"y":20,"layer":"TOP","padstack":"SMD60","is_smd":true,"pad_w":0.6,"pad_h":0.6,"drill_mm":0},
+    {"refdes":"C1","pin":"2","net":"SHORT_B","x":20,"y":20.05,"layer":"TOP","padstack":"SMD60","is_smd":true,"pad_w":0.6,"pad_h":0.6,"drill_mm":0}
+  ],
+  "shapes": [
+    {"net":"GND","layer":"BOTTOM","bbox":[8,8,12,22]}
+  ],
+  "testpoints": [
+    {"net":"GND","refdes":"TP1","pin":"1","x":12,"y":12,"layer":"TOP","pad_mm":0.15}
+  ],
+  "drc": [
+    {"type":"spacing","severity":"error","x":35,"y":15.1,"layer":"TOP","text":"Line to line spacing 0.05mm < 0.09mm"}
+  ]
+}

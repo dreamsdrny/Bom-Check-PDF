@@ -19,13 +19,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gui import BRD_AIGUI, DFMDialog, PanelDialog
 from src.panel_ui import PanelDesigner
 from src.gerber_viewer import GerberViewer
+from src.brd_dfm_ui import BrdDFMWindow
+from src.branding import APP_NAME, win_title
 from src.win_dpi import apply_window, enable_dpi_awareness, set_app_user_model_id
 
 
 class MainLauncher:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Evan_DFM: PCB DFM & Constraint Generator")
+        self.root.title(win_title())
         apply_window(self.root, 760, 560)
         self.root.resizable(True, True)
         self._windows = {}
@@ -35,7 +37,7 @@ class MainLauncher:
         main = ttk.Frame(self.root, padding=18)
         main.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(main, text="Evan_DFM", font=("Arial", 22, "bold")).pack(anchor=tk.W)
+        ttk.Label(main, text=APP_NAME, font=("Arial", 22, "bold")).pack(anchor=tk.W)
         ttk.Label(main, text="PCB 可制造性(DFM) / 约束自动生成 工作台",
                   font=("Arial", 11), foreground="#555").pack(anchor=tk.W, pady=(2, 4))
         ttk.Separator(main, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 14))
@@ -45,6 +47,7 @@ class MainLauncher:
 
         cards = [
             ("分析BRD", "读取 Allegro .brd\n生成约束/Checklist/DFM 校验", self._open_brd, "#2F5496"),
+            ("分析BRD-DFM", "直接读 .brd (extracta 无界面提取)\n几何DFM定位XY / 开短路 / 网表 / Valor报告", self._open_brd_dfm, "#C00000"),
             ("分析Gerber", "RS-274X + NC Drill 解析\n完整性检查 / 网络比对 / 交叉定位", self._open_gerber, "#0a7a3a"),
             ("分析ODB", "ODB++ 工程解析\n完整性检查 / 网络比对 / 交叉定位", self._open_odb, "#B8860B"),
             ("DFM", "板厂制程能力比对\n问题分级报告 / 风险评分 / 自动拼板", self._open_dfm, "#7030A0"),
@@ -72,6 +75,11 @@ class MainLauncher:
         win = BRD_AIGUI(self.root)
         self._windows.setdefault("brd", []).append(win)
         self.status_var.set("已打开: 分析BRD")
+
+    def _open_brd_dfm(self):
+        win = BrdDFMWindow(self.root)
+        self._windows.setdefault("brd_dfm", []).append(win)
+        self.status_var.set("已打开: 分析BRD-DFM (SKILL 导出, 定位XY)")
 
     def _open_gerber(self):
         win = FabWindow(self.root, mode="gerber")
@@ -110,7 +118,7 @@ class FabWindow:
         self.issues = []
         self.comparison = None
 
-        title = "Evan_DFM - 分析ODB++" if self.is_odb else "Evan_DFM - 分析Gerber"
+        title = win_title("分析ODB++") if self.is_odb else win_title("分析Gerber")
         self.win = tk.Toplevel(master)
         self.win.title(title)
         apply_window(self.win, 940, 680)

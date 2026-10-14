@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from src.fab_data_reader import parse_gerber, parse_excellon
+from src.branding import win_title
 
 _PALETTE = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa",
             "#00acc1", "#6d4c41", "#3949ab", "#c0ca33", "#d81b60"]
@@ -35,14 +36,27 @@ class GerberLayer:
         b = self.data.get("bbox")
         if not b or b[0] is None:
             return None
+        minx, miny, maxx, maxy = b
+        if self.mirror_x:
+            minx, maxx = -maxx, -minx
         dx, dy = self.offset
-        return [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy]
+        return [minx + dx, miny + dy, maxx + dx, maxy + dy]
+
+    def local_bbox(self):
+        """不含偏移的包围盒 (镜像已应用), 用于位图缓存"""
+        b = self.data.get("bbox")
+        if not b or b[0] is None:
+            return None
+        minx, miny, maxx, maxy = b
+        if self.mirror_x:
+            minx, maxx = -maxx, -minx
+        return [minx, miny, maxx, maxy]
 
 
 class GerberViewer:
     def __init__(self, master, title="Gerber 查看器 (叠加对比)"):
         self.win = tk.Toplevel(master)
-        self.win.title(f"Evan_DFM - {title}")
+        self.win.title(win_title(title))
         from src.win_dpi import apply_window
         apply_window(self.win, 1180, 760)
 
@@ -51,6 +65,10 @@ class GerberViewer:
         self.zoom = 1.0
         self.pan = [0.0, 0.0]
         self._drag = None
+        self._img_cache = {}          # 图层位图缓存: id(layer) -> entry
+        self._render_job = None       # 渲染节流 (缩放/平移合并刷新)
+        self._view_bbox = None        # 固定视图范围 (拖动时不变, 便于缓存复用)
+        self._pil = None              # 延迟加载 PIL
 
         self._build()
 
@@ -101,12 +119,20 @@ class GerberViewer:
         ttk.Button(btnbar, text="关选中", width=6, command=lambda: self._set_sel(False)).pack(side=tk.LEFT, padx=2)
         ttk.Button(btnbar, text="反选", width=5, command=self._invert).pack(side=tk.LEFT)
 
+        style = ttk.Style(self.win)
+        try:
+            style.configure("GerberLayers.Treeview", font=("Microsoft YaHei UI", 11), rowheight=30)
+            style.configure("GerberLayers.Treeview.Heading",
+                            font=("Microsoft YaHei UI", 10, "bold"))
+        except Exception:
+            pass
         self.tree = ttk.Treeview(left, columns=("st", "name"), show="headings",
-                                 height=28, selectmode="extended")
+                                 height=26, selectmode="extended",
+                                 style="GerberLayers.Treeview")
         self.tree.heading("st", text="开/关")
         self.tree.heading("name", text="图层")
-        self.tree.column("st", width=52, anchor=tk.CENTER, stretch=False)
-        self.tree.column("name", width=230, anchor=tk.W)
+        self.tree.column("st", width=70, anchor=tk.CENTER, stretch=False)
+        self.tree.column("name", width=220, anchor=tk.W)
         self.tree.pack(side=tk.LEFT, fill=tk.Y)
         tsb = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=tsb.set)
@@ -133,30 +159,32 @@ class GerberViewer:
                   anchor=tk.W).pack(fill=tk.X, side=tk.BOTTOM)
 
     # ---------------- 图层管理 ----------------
-    def add_layer(self, path, color=None, name=None):
+    def add_layer(self, path, color=None, name=None, fit_now=True):
         data = parse_gerber(path, layer_name=name or os.path.basename(path))
         if color is None:
             color = _PALETTE[len(self.layers) % len(_PALETTE)]
         layer = GerberLayer(name or os.path.basename(path), data, color)
         layer.visible = False                    # 默认关闭 (需要时点亮)
         self.layers.append(layer)
-        self._refresh_list()
-        self.selected = len(self.layers) - 1
-        self._sync_selection()
-        self.fit()
+        if fit_now:
+            self._refresh_list()
+            self.selected = len(self.layers) - 1
+            self._sync_selection()
+            self.fit()
         return layer
 
-    def add_drill(self, path):
+    def add_drill(self, path, fit_now=True):
         data = parse_excellon(path)
         color = "#ffffff"
         layer = GerberLayer(os.path.basename(path), data, color)
         layer.kind = "drill"
         layer.visible = False
         self.layers.append(layer)
-        self._refresh_list()
-        self.selected = len(self.layers) - 1
-        self._sync_selection()
-        self.fit()
+        if fit_now:
+            self._refresh_list()
+            self.selected = len(self.layers) - 1
+            self._sync_selection()
+            self.fit()
         return layer
 
     def _import_gerber(self):
@@ -169,11 +197,7 @@ class GerberViewer:
     def _import_drill(self):
         paths = filedialog.askopenfilenames(title="导入钻孔 (NC Drill)",
                                             filetypes=[("Drill", "*.drl *.txt"), ("All files", "*.*")])
-        for p in paths:
-            try:
-                self.add_drill(p)
-            except Exception as exc:  # noqa: BLE001
-                messagebox.showerror("导入失败", f"{p}\n{exc}")
+        self._add_paths(paths)
 
     def _import_dir(self):
         d = filedialog.askdirectory(title="导入目录下全部 Gerber/钻孔")
@@ -192,14 +216,28 @@ class GerberViewer:
         self._add_paths(paths)
 
     def _add_paths(self, paths):
-        for p in paths:
+        paths = list(paths or [])
+        if not paths:
+            return
+        n = len(paths)
+        errs = []
+        for i, p in enumerate(paths, 1):
             try:
-                if p.lower().endswith(".drl") or "drill" in p.lower():
-                    self.add_drill(p)
+                self.status.set(f"解析中 {i}/{n}: {os.path.basename(p)}")
+                self.win.update_idletasks()
+                low = p.lower()
+                if low.endswith(".drl") or "drill" in low:
+                    self.add_drill(p, fit_now=False)
                 else:
-                    self.add_layer(p)
+                    self.add_layer(p, fit_now=False)
             except Exception as exc:  # noqa: BLE001
-                messagebox.showerror("导入失败", f"{p}\n{exc}")
+                errs.append(f"{os.path.basename(p)}: {exc}")
+        self.selected = len(self.layers) - 1 if self.layers else None
+        self._refresh_list()
+        self.fit()
+        self.status.set(f"已导入 {n} 个文件, 图层默认关闭 — 点『开/关』列点亮 (可 Shift 多选后『开选中』)")
+        if errs:
+            messagebox.showerror("部分导入失败", "\n".join(errs[:10]))
 
     def _compare_load(self, tag):
         path = filedialog.askopenfilename(title=f"对比: 导入 Gerber {tag}",
@@ -217,13 +255,15 @@ class GerberViewer:
     def _clear(self):
         self.layers = []
         self.selected = None
+        self._img_cache.clear()
         self._refresh_list()
         self._render()
 
     def _refresh_list(self):
+        self._recompute_view_bbox()
         self.tree.delete(*self.tree.get_children())
         for i, ly in enumerate(self.layers):
-            mark = "●" if ly.visible else "○"
+            mark = "■" if ly.visible else "□"      # 方形开关: 亮(实心)=开, 空心=关
             tag = "on" if ly.visible else "off"
             self.tree.insert("", tk.END, iid=str(i),
                              values=(mark, f"{ly.name}"), tags=(tag,))
@@ -307,6 +347,7 @@ class GerberViewer:
         if self.selected is not None:
             self.layers.pop(self.selected)
             self.selected = None
+            self._img_cache.clear()
             self._refresh_list()
             self._render()
 
@@ -319,6 +360,7 @@ class GerberViewer:
         ly = self._sel_layer()
         if ly:
             ly.offset = [0.0, 0.0]
+            self._recompute_view_bbox()
             self._render()
 
     def _reset_sel(self):
@@ -326,6 +368,7 @@ class GerberViewer:
         if ly:
             ly.offset = [0.0, 0.0]
             ly.mirror_x = False
+            self._recompute_view_bbox()
             self._render()
 
     def _mirror_sel(self):
@@ -351,6 +394,7 @@ class GerberViewer:
         ly.offset = [ (rb[0]+rb[2])/2 - (b[0]+b[2])/2,
                       (rb[1]+rb[3])/2 - (b[1]+b[3])/2 ]
         ly.mirror_x = ref.mirror_x
+        self._recompute_view_bbox()
         self._render()
         self.info.set(f"{ly.name}: 已按中心对齐到 {ref.name}")
 
@@ -363,6 +407,7 @@ class GerberViewer:
         if not b or not rb or b[0] is None or rb[0] is None:
             return
         ly.offset = [rb[0] - b[0], rb[1] - b[1]]
+        self._recompute_view_bbox()
         self._render()
         self.info.set(f"{ly.name}: 已按左下角对齐到 {ref.name}")
 
@@ -372,12 +417,22 @@ class GerberViewer:
         if not boxes:                     # 全部隐藏时, 仍按全部图层适配
             boxes = [ly.bbox() for ly in self.layers if ly.bbox()]
         if not boxes:
-            return (0.0, 0.0, 100.0, 100.0)
+            return None
         return (min(b[0] for b in boxes), min(b[1] for b in boxes),
                 max(b[2] for b in boxes), max(b[3] for b in boxes))
 
+    def _recompute_view_bbox(self):
+        """固定视图范围: 仅在导入/删除/适配/对齐时更新。
+        拖动图层时不改变比例, 从而复用位图缓存, 避免明显卡顿。"""
+        b = self._bbox_all()
+        self._view_bbox = b or (0.0, 0.0, 100.0, 100.0)
+        return self._view_bbox
+
     def _scale(self):
-        minx, miny, maxx, maxy = self._bbox_all()
+        vb = self._view_bbox
+        if vb is None:
+            vb = self._recompute_view_bbox()
+        minx, miny, maxx, maxy = vb
         W = self.canvas.winfo_width() or 800
         H = self.canvas.winfo_height() or 600
         base = min(W / max(maxx - minx, 1e-6), H / max(maxy - miny, 1e-6)) * 0.9
@@ -396,12 +451,29 @@ class GerberViewer:
         return x, y
 
     def fit(self):
+        self._recompute_view_bbox()
         self.zoom = 1.0
         self.pan = [0.0, 0.0]
         self._render()
 
     def _zoom(self, factor):
         self.zoom *= factor
+        self._schedule_render()
+
+    def _schedule_render(self):
+        """合并高频刷新(滚轮缩放/平移), 避免连续全量重绘造成卡顿"""
+        if self._render_job is not None:
+            try:
+                self.win.after_cancel(self._render_job)
+            except Exception:
+                pass
+        try:
+            self._render_job = self.win.after(35, self._do_render)
+        except Exception:
+            self._render()
+
+    def _do_render(self):
+        self._render_job = None
         self._render()
 
     # ---------------- 交互 ----------------
@@ -437,7 +509,7 @@ class GerberViewer:
         if self._drag and self._drag["mode"] == "pan":
             self.pan = [self._drag["ox"] + (event.x - self._drag["px"]),
                         self._drag["oy"] + (event.y - self._drag["py"])]
-            self._render()
+            self._schedule_render()
 
     def _on_hover(self, event):
         x, y = self._canvas_to_mm(event.x, event.y)
@@ -511,53 +583,117 @@ class GerberViewer:
             if len(pts) >= 6:
                 cv.create_polygon(pts, fill=color, outline="")
 
-    def _draw_layer(self, cv, ly, selected=False):
-        color = ly.color
-        bg = "#0f1115"
+    def _rgb(self, hexcolor):
+        h = (hexcolor or "#2f7ed8").lstrip("#")
+        if len(h) == 3:
+            h = "".join(ch * 2 for ch in h)
+        try:
+            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return (47, 126, 216)
+
+    def _layer_image(self, ly):
+        """整层渲染为位图并缓存: 每层只占 1 个画布图元,
+        平移/拖动图层时无需重绘几何, 显著减少卡顿。"""
+        if self._pil is None:
+            from PIL import Image, ImageDraw, ImageTk
+            self._pil = (Image, ImageDraw, ImageTk)
+        Image, ImageDraw, ImageTk = self._pil
+
+        lb = ly.local_bbox()
+        if not lb:
+            return None
+        minx, miny, maxx, maxy = lb
+        w = max(maxx - minx, 1e-6)
+        h = max(maxy - miny, 1e-6)
+        s = self._scale()[0]
+        W = max(2, int(round(w * s)) + 3)
+        H = max(2, int(round(h * s)) + 3)
+        sig = (W, H, ly.mirror_x, ly.color)
+        cached = self._img_cache.get(id(ly))
+        if cached and cached[0] == sig:
+            return cached[1]
+
+        cap = 2500.0
+        s_eff = s
+        if max(W, H) > cap:            # 限制位图尺寸, 防止内存暴涨
+            s_eff = cap / max(w, h)
+        Wr = max(2, int(round(w * s_eff)) + 3)
+        Hr = max(2, int(round(h * s_eff)) + 3)
+        img = Image.new("RGBA", (Wr, Hr), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        col = self._rgb(ly.color)
+        bgcol = (15, 17, 21, 255)
+        mirror = ly.mirror_x
+
+        def T(x, y):
+            lx = -x if mirror else x
+            return ((lx - minx) * s_eff + 1.5, Hr - ((y - miny) * s_eff + 1.5))
+
         for p in (ly.data.get("primitives") or ly.data.get("features") or []):
             t = p.get("type")
-            c = bg if p.get("clear") else color
-
-            def T(px, py):
-                if px is None:
-                    return None
-                if ly.mirror_x:
-                    px = -px
-                return self._to_canvas(px + ly.offset[0], py + ly.offset[1])
-
-            if t == "flash":
-                if p.get("x1") is not None:
-                    self._draw_flash(cv, ly, p, c)
-            elif t == "arc":
-                pts = self._arc_points(p)
-                if len(pts) >= 2:
-                    flat = []
-                    for px, py in pts:
-                        cx, cy = T(px, py)
-                        flat.extend([cx, cy])
-                    cv.create_line(*flat, fill=c)
-            elif t == "region":
-                flat = []
-                for px, py in p.get("points", []):
-                    cx, cy = T(px, py)
-                    flat.extend([cx, cy])
-                if len(flat) >= 6:
-                    cv.create_polygon(flat, fill=c, outline="")
-            elif t == "error":
+            if t == "error" or p.get("x1") is None:
                 continue
+            c = bgcol if p.get("clear") else col
+            if t == "flash":
+                shape, fw, fh, edges, rot = self._ap_shape(ly, p)
+                cx, cy = T(p["x1"], p["y1"])
+                if shape == "R":
+                    hw, hh = fw / 2 * s_eff, fh / 2 * s_eff
+                    d.rectangle([cx - hw, cy - hh, cx + hw, cy + hh], fill=c)
+                elif shape == "O":
+                    hw, hh = fw / 2 * s_eff, fh / 2 * s_eff
+                    rr = min(hw, hh)
+                    if fw >= fh:
+                        d.ellipse([cx - hw, cy - hh, cx - hw + 2 * rr, cy + hh], fill=c)
+                        d.ellipse([cx + hw - 2 * rr, cy - hh, cx + hw, cy + hh], fill=c)
+                        d.rectangle([cx - hw + rr, cy - hh, cx + hw - rr, cy + hh], fill=c)
+                    else:
+                        d.ellipse([cx - hw, cy - hh, cx + hw, cy - hh + 2 * rr], fill=c)
+                        d.ellipse([cx - hw, cy + hh - 2 * rr, cx + hw, cy + hh], fill=c)
+                        d.rectangle([cx - hw, cy - hh + rr, cx + hw, cy + hh - rr], fill=c)
+                elif shape == "P" and edges >= 3:
+                    r = fw / 2 * s_eff
+                    pts = [(cx + r * math.cos(math.radians(rot + k * 360.0 / edges)),
+                            cy + r * math.sin(math.radians(rot + k * 360.0 / edges)))
+                           for k in range(edges)]
+                    d.polygon(pts, fill=c)
+                else:
+                    r = max(0.7, fw / 2 * s_eff)
+                    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=c)
+            elif t == "arc":
+                pts = [T(px, py) for px, py in self._arc_points(p)]
+                if len(pts) >= 2:
+                    d.line(pts, fill=c)
+            elif t == "region":
+                pts = [T(px, py) for px, py in p.get("points", [])]
+                if len(pts) >= 3:
+                    d.polygon(pts, fill=c)
             else:
-                if p.get("x1") is None:
-                    continue
-                c1 = T(p["x1"], p["y1"])
-                c2 = T(p.get("x2", p["x1"]), p.get("y2", p["y1"]))
-                cv.create_line(c1[0], c1[1], c2[0], c2[1], fill=c)
+                d.line([T(p["x1"], p["y1"]),
+                        T(p.get("x2", p["x1"]), p.get("y2", p["y1"]))], fill=c)
+
         if ly.kind == "drill":
-            for h in ly.data.get("holes", []):
-                if h.get("x") is None:
+            for hd in ly.data.get("holes", []):
+                if hd.get("x") is None:
                     continue
-                cx, cy = T(h["x"], h["y"])
-                r = max(1.0, (h.get("diameter_mm") or 0.3) / 2 * self._scale()[0])
-                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
+                cx, cy = T(hd["x"], hd["y"])
+                r = max(0.8, (hd.get("diameter_mm") or 0.3) / 2 * s_eff)
+                d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+
+        if (Wr, Hr) != (W, H):
+            img = img.resize((W, H), Image.BILINEAR)
+        photo = ImageTk.PhotoImage(img)
+        entry = (sig, (photo, minx, miny, maxx, maxy))
+        self._img_cache[id(ly)] = entry
+        return entry[1]
+
+    def _draw_layer(self, cv, ly, selected=False):
+        ent = self._layer_image(ly)
+        if ent is not None:
+            photo, minx, miny, maxx, maxy = ent
+            x0, y0 = self._to_canvas(minx + ly.offset[0], maxy + ly.offset[1])
+            cv.create_image(x0, y0, image=photo, anchor="nw")
         if selected:
             b = ly.bbox()
             if b:
