@@ -1,0 +1,275 @@
+# ============================================================
+# BRD-AI / DFM: PCB 制程能力数据库 - JLCPCB (嘉立创)
+# 来源: JLCPCB 官方 "Rigid PCB Manufacturing Capabilities" 公开能力表
+# 单位约定: 每项均带 unit 字段 (mm/um/mil/percent/ratio)
+# 说明: 与 dfm_capability_hongban.yaml / _sihui.yaml 结构一致, 可直接被
+#       src.dfm_engine 加载 (factory = jlcpcb)
+# ============================================================
+
+meta:
+  factory: "JLCPCB"
+  revision: "2026-10"
+  source_files:
+    - "https://jlcpcb.com/capabilities/pcb-capabilities"
+  unit_note: "mil->mm 换算 1mil=0.0254mm; 铜厚表中 T 为成品铜厚(um)"
+
+board_types:
+
+  # ==========================================================
+  # 硬板 (Rigid)
+  # ==========================================================
+  rigid:
+    label: "硬板"
+    levels: [standard, extreme]
+    level_labels:
+      standard: "常规"
+      extreme: "极限/HDI"
+
+    # ---------- 常规 ----------
+    standard:
+      panel:
+        max_working_panel:   { value: [670, 600], unit: mm, note: "FR4 2层最大 670x600; 多层 656x586" }
+        max_array:           { value: [475, 475], unit: mm, note: "V-Cut 拼板最大 475x475" }
+        min_pcs:             { value: [70, 70], unit: mm, note: "V-Cut 拼板最小 70x70" }
+        min_breakaway_rail:  { value: 3, unit: mm, note: "工艺边最小 3mm; JLCPCB SMT 建议 5mm" }
+        min_board_size:      { value: [3, 3], unit: mm, note: "单板最小 3x3mm, 小板建议拼板" }
+        board_spacing:       { value: 2, unit: mm, note: "拼板单板间距 >=2mm" }
+        vcut:
+          angle_deg:         { value: 25, unit: deg }
+          min_spacing:       { value: 2, unit: mm, note: "两 V-Cut 间距 >=2mm (推荐 3mm)" }
+          copper_to_edge:    { value: 0.4, unit: mm }
+        mouse_bite:
+          diameter:          { value: [0.5, 0.8], unit: mm }
+          spacing:           { value: [0.2, 0.3], unit: mm }
+          breakaway_min:     { value: 4, unit: mm, note: "连接筋最小宽 4mm; 带邮票孔 5mm" }
+        fiducial:
+          diameter:          { value: 1, unit: mm }
+          to_panel_edge:     { value: 3.85, unit: mm }
+        tooling_hole:        { value: 2, unit: mm }
+      trace:
+        # 最小线宽/线距 L/S (um) 按成品铜厚 T(um) 分档
+        min_line_spacing_by_copper:
+          - { copper_max_um: 35,  line_um: 100, space_um: 100, note: "1oz: 2层 0.10/0.10; 多层 0.09/0.09" }
+          - { copper_min_um: 35,  copper_max_um: 70,  line_um: 160, space_um: 160, note: "2oz: 2层 0.16; 多层 0.15" }
+          - { copper_min_um: 70,  copper_max_um: 88,  line_um: 200, space_um: 200, note: "2.5oz: 0.2/0.2" }
+          - { copper_min_um: 88,  copper_max_um: 122, line_um: 250, space_um: 250, note: "3.5oz: 0.25/0.25" }
+          - { copper_min_um: 122, copper_max_um: 160, line_um: 300, space_um: 300, note: "4.5oz: 0.3/0.3" }
+        line_width_tolerance:
+          - { tol_pct: 20, note: "线宽公差 ±20%" }
+        hole_to_hole_spacing:
+          pth_to_pth:       { value: 0.20, unit: mm, note: "Via 孔到孔 0.2; Pad 孔到孔 0.45" }
+          pad_to_pad:       { value: 0.45, unit: mm }
+          via_to_track:     { value: 0.20, unit: mm }
+          pth_to_track:     { value: 0.28, unit: mm, note: "推荐 0.35, 最小 0.28" }
+          npth_to_track:    { value: 0.20, unit: mm }
+          pad_to_track:     { value: 0.10, unit: mm, note: "BGA 局部可到 0.09" }
+          smd_pad_to_pad:   { value: 0.15, unit: mm, note: "不同网络 SMD 焊盘间距" }
+          inner_via_to_cu:  { value: 0.20, unit: mm, note: "内层 via 孔到铜" }
+          inner_pth_to_cu:  { value: 0.30, unit: mm, note: "内层 PTH 焊盘孔到铜" }
+          same_net_track:   { value: 0.25, unit: mm }
+          hatched_grid:     { value: 0.25, unit: mm }
+        trace_to_board_edge:  { inner: 0.20, outer: 0.20, unit: mm, note: "锣板边铜间距 >=0.2mm" }
+        trace_coil:          { value: 0.15, unit: mm, note: "带阻焊覆盖的线圈线宽/线距 0.15 (无覆盖 0.25, 仅 ENIG)" }
+        bga:
+          min_pad:           { value: 0.20, unit: mm, note: "0.20-0.25mm BGA 焊盘需 ENIG" }
+          pad_to_trace:      { value: 0.10, unit: mm, note: "多层最小 0.09" }
+        aoi_min_detect: { value: 3, unit: mil, note: "参考值" }
+      lamination:
+        board_thickness:    { min_mm: 0.4, max_mm: 4.5, note: "0.4/0.6/0.8/1.0/1.2/1.6/2.0; 2.5mm 以上仅 12+ 层" }
+        thickness_tol:      { ge_1mm_pct: 10, lt_1mm_mm: 0.1, note: ">=1.0mm ±10%; <1.0mm ±0.1mm" }
+        dimension_tol:      { value: 0.1, unit: mm, note: "精密 ±0.1 / 常规 ±0.2 (锣); V-Cut ±0.4" }
+        layer_count:        { min: 1, max: 32 }
+        dielectric_dk:      { value: 4.5, note: "FR4 2层; 7628=4.4, 3313/2116=4.1/4.16" }
+      impedance:
+        tolerance_pct:      { value: 10, note: "标准 ±10%; 特殊要求 ±5%" }
+      drill:
+        min_mech_drill:    { value: 0.15, unit: mm, note: "2层及以上 0.15 (0.10 需板厚<=1mm 且 ENIG/OSP); 1层 0.3" }
+        max_mech_drill:    { value: 6.3, unit: mm, note: ">=6.3mm 采用 CNC 锣槽" }
+        min_laser_via:     { value: 75, unit: um, note: "HDI 盲孔 0.075-0.15mm" }
+        min_buried_via:    { value: 150, unit: um, note: "埋孔 0.15-0.55 (极限 0.10, 介质<=1.0mm)" }
+        hole_size_tol:     { pth: "+0.13/-0.08", pressfit: "±0.05", npth: "±0.2", unit: mm }
+        hole_position_tol: { value: 0.075, unit: mm }
+        hole_plating:      { value: 18, unit: um, note: "平均孔铜厚度" }
+        annular_ring_mech:  { value: 0.18, unit: mm, note: "PTH 孔环: 2层1oz 极限0.18/推荐0.25; 多层极限0.15/推荐0.20; 2oz 0.254" }
+        annular_ring_pth:   { value: 0.20, unit: mm }
+        annular_ring_npth:  { value: 0.45, unit: mm, note: "NPTH 焊盘孔环 >=0.45 (预留 0.2 封孔环)" }
+        via_hole_pad:      { value: 0.10, unit: mm, note: "Via 直径应比孔径大 0.1 (推荐 0.15)" }
+        min_npth:          { value: 0.50, unit: mm }
+        plated_slot_min:   { value: 0.50, unit: mm, note: "2层 0.5; 多层 0.35; 槽长 >= 2x 槽宽" }
+        npth_slot_min:     { value: 1.0, unit: mm }
+        castellated:
+          min_diameter:    { value: 0.5, unit: mm }
+          hole_to_edge:    { value: 1.0, unit: mm }
+          hole_to_hole:    { value: 0.5, unit: mm }
+          min_board:       { value: [10, 10], unit: mm }
+          min_thickness:   { value: 0.6, unit: mm }
+        blind_slot:
+          width:           { value: 1.0, unit: mm }
+          depth:           { value: 0.2, unit: mm }
+          annular:         { value: 0.3, unit: mm }
+          safety_dist:     { value: 0.2, unit: mm }
+          remaining_thk:   { value: 0.2, unit: mm }
+        backdrill:
+          min_layers:      { value: 4 }
+          min_thickness:   { value: 0.8, unit: mm }
+          hole_dia:        { value: [0.2, 0.5], unit: mm }
+          drill_dia_delta: { value: 0.2, unit: mm, note: "背钻孔径一般比通孔大 0.2mm" }
+          dielectric_min:  { value: 0.15, unit: mm }
+          safety_dist:     { value: 0.2, unit: mm }
+        npth_to_edge: { value: 0.5, unit: mm, note: "参考值, 孔壁到板边" }
+      plating:
+        pth_aspect_ratio:        { value: 10, unit: ratio, note: "参考值, 请与板厂确认" }
+        blind_via_fill_aspect:   { value: 0.8, unit: ratio }
+        plating_uniformity:      { value: 12, unit: um }
+      plug_hole:
+        ink_types: [阻焊塞孔, 树脂塞孔盖帽, 铜浆塞孔盖帽]
+        soldermask_plug_min:  { board_thickness_mm: 0.4, hole_mm: 0.5, note: "塞孔孔径 <=0.5mm; 两面不得开窗" }
+        resin_plug_min:       { board_thickness_mm: 0.4, hole_mm: 0.15, note: "Via-in-Pad 树脂/铜浆塞孔盖帽 0.15-0.55mm" }
+        plug_clearance:       { value: 0.35, unit: mm, note: "塞孔与相邻阻焊开窗 >=0.35mm" }
+      solder_mask:
+        type: "LPI (Liquid Photo Imageable)"
+        colors: [绿色, 紫色, 红色, 黄色, 蓝色, 白色, 黑色]
+        expansion:            { value: "1:1", note: "焊盘:开窗 1:1 (2025-06 LDI 升级后)" }
+        min_opening:          { value: 0.09, unit: mm, note: "阻焊开窗到相邻线路 >=0.09mm" }
+        min_bridge_by_copper:
+          - { copper_oz: 1,   value: 0.10, unit: mm, note: "绿/红/黄/蓝/紫 0.10; 黑/白 0.13" }
+          - { copper_oz: 2,   value: 0.20, unit: mm }
+        ink_thickness:        { value: 10, unit: um, note: "阻焊油墨厚度 >=10um" }
+        dielectric_constant:  { value: 3.8 }
+      silkscreen:
+        min_line_width:      { value: 0.15, unit: mm, note: "<0.15mm 无法辨识" }
+        min_clearance:       { value: 0.15, unit: mm }
+        min_to_solder_mask:  { value: 0.15, unit: mm, note: "焊盘到丝印 >=0.15mm" }
+        min_char_size:       { width_mil: 6.6, height_mil: 39.4, note: "字高 >=1.0mm(40mil), 宽高比 1:6" }
+        char_ratio:          { value: "1:6", note: "字宽:字高 推荐 1:6" }
+      surface_finish:
+        HASL:      { type: "有铅/无铅喷锡", note: "6层及以上/板厚<=0.4mm/高频板/铜基板/FPC 不支持" }
+        ENIG:      { type: "沉金" }
+        OSP:       { type: "抗氧化", note: "单面 FR4/FPC/铝基 暂不支持" }
+      test:
+        min_pad_2wire: { value: 0.25, unit: mm, note: "最小 SMD 焊盘 0.25x0.25mm" }
+        min_pad_4wire: { value: [0.25, 0.4], unit: mm }
+      outline:
+        routed_copper_to_edge: { value: 0.2, unit: mm }
+        routed_tol:            { value: 0.2, unit: mm, note: "常规 ±0.2; 高精度 ±0.1 (最小 50x50 且 >=3 个 1.5mm 定位孔)" }
+        vcut_tol:              { value: 0.4, unit: mm }
+        al_cu_slot_min:        { value: 1.6, unit: mm, note: "铝基/铜基最小槽宽" }
+        rect_hole:             { value: "不支持", note: "不支持无圆角的矩形孔/槽" }
+
+    # ---------- 极限 / HDI ----------
+    extreme:
+      panel:
+        max_working_panel:   { value: [1020, 600], unit: mm, note: "2层 FR4 最大 1020x600" }
+        max_array:           { value: [475, 475], unit: mm }
+        min_pcs:             { value: [70, 70], unit: mm }
+        min_breakaway_rail:  { value: 3, unit: mm }
+        min_board_size:      { value: [3, 3], unit: mm }
+        board_spacing:       { value: 2, unit: mm }
+      trace:
+        min_line_spacing_by_copper:
+          - { copper_max_um: 35,  line_um: 90,  space_um: 90,  note: "多层 3.5/3.5mil; BGA fanout 可 3mil" }
+          - { copper_min_um: 35,  copper_max_um: 70,  line_um: 150, space_um: 150 }
+          - { copper_min_um: 70,  copper_max_um: 88,  line_um: 200, space_um: 200 }
+          - { copper_min_um: 88,  copper_max_um: 122, line_um: 250, space_um: 250 }
+          - { copper_min_um: 122, copper_max_um: 160, line_um: 300, space_um: 300 }
+        line_width_tolerance:
+          - { tol_pct: 20 }
+        hole_to_hole_spacing:
+          pth_to_pth:       { value: 0.20, unit: mm }
+          pad_to_pad:       { value: 0.45, unit: mm }
+          bga_pad_to_trace: { value: 0.09, unit: mm, note: "多层 BGA 局部 0.09" }
+        trace_to_board_edge:  { inner: 0.20, outer: 0.20, unit: mm }
+        hdi:
+          steps:            { value: "1-3 阶" }
+          blind_via:        { value: [0.075, 0.15], unit: mm }
+          buried_via:       { value: [0.15, 0.55], unit: mm, note: "极限 0.10 (介质 <=1.0mm)" }
+          min_ls:           { value: [0.075, 0.075], unit: mm, note: "3/3mil; 极限 2.7/2.7mil" }
+          min_ls_extreme:   { value: [0.0686, 0.0686], unit: mm }
+          min_board:        { value: [5, 5], unit: mm }
+          max_board:        { value: [576, 469], unit: mm }
+          material:         { value: "Nan Ya NP-175F TG170 / Shengyi S1000-2M TG170" }
+      lamination:
+        board_thickness:    { min_mm: 0.4, max_mm: 4.5 }
+        layer_count:        { min: 1, max: 32 }
+      impedance:
+        tolerance_pct:      { value: 5, note: "特殊要求 ±5%" }
+      drill:
+        min_mech_drill:    { value: 0.10, unit: mm, note: "0.10mm 微孔: 板厚<=1mm 且 ENIG/OSP, 成本更高" }
+        max_mech_drill:    { value: 6.3, unit: mm }
+        min_laser_via:     { value: 75, unit: um }
+        hole_position_tol: { value: 0.075, unit: mm }
+        hole_plating:      { value: 18, unit: um }
+        annular_ring_mech:  { value: 0.15, unit: mm, note: "多层 1oz 极限 0.15" }
+        annular_ring_npth:  { value: 0.45, unit: mm }
+        npth_to_edge: { value: 0.5, unit: mm }
+      plating:
+        pth_aspect_ratio:        { value: 12, unit: ratio, note: "参考值, 请与板厂确认" }
+        blind_via_fill_aspect:   { value: 1.0, unit: ratio }
+      plug_hole:
+        ink_types: [树脂塞孔盖帽, 铜浆塞孔盖帽]
+        soldermask_plug_min:  { board_thickness_mm: 0.4, hole_mm: 0.5 }
+        resin_plug_min:       { board_thickness_mm: 0.4, hole_mm: 0.15 }
+        plug_clearance:       { value: 0.35, unit: mm }
+      solder_mask:
+        type: "LPI"
+        expansion:            { value: "1:1" }
+        min_opening:          { value: 0.09, unit: mm }
+        min_bridge_by_copper:
+          - { copper_oz: 1,   value: 0.10, unit: mm }
+          - { copper_oz: 2,   value: 0.20, unit: mm }
+        ink_thickness:        { value: 10, unit: um }
+      silkscreen:
+        min_line_width:      { value: 0.15, unit: mm }
+        min_clearance:       { value: 0.15, unit: mm }
+        min_to_solder_mask:  { value: 0.15, unit: mm }
+        min_char_size:       { width_mil: 6.6, height_mil: 39.4 }
+      surface_finish:
+        ENIG:      { type: "沉金" }
+        OSP:       { type: "抗氧化" }
+      test:
+        min_pad_2wire: { value: 0.25, unit: mm }
+        min_pad_4wire: { value: [0.25, 0.4], unit: mm }
+
+  # ==========================================================
+  # 软板 / 软硬结合板 (Flex) — JLCPCB 公开能力有限, 仅列已知项
+  # ==========================================================
+  flex:
+    label: "软板及软硬结合板"
+    levels: [standard]
+    level_labels:
+      standard: "常规"
+
+    standard:
+      panel:
+        max_working_panel:   { value: [500, 490], unit: mm, note: "参考值, 需与板厂确认" }
+        min_breakaway_rail:  { value: 3, unit: mm }
+      trace:
+        min_line_spacing_by_copper:
+          - { copper_max_um: 35,  line_um: 100, space_um: 100, note: "参考值, 需与板厂确认" }
+        hole_to_hole_spacing:
+          pth_to_pth:       { value: 0.20, unit: mm }
+        trace_to_board_edge:  { inner: 0.20, outer: 0.20, unit: mm }
+      lamination:
+        board_thickness:    { min_mm: 0.2, max_mm: 2.0, note: "参考值" }
+      drill:
+        min_mech_drill:    { value: 0.15, unit: mm }
+        max_mech_drill:    { value: 6.3, unit: mm }
+        min_laser_via:     { value: 75, unit: um }
+        annular_ring_mech:  { value: 0.15, unit: mm }
+        npth_to_edge: { value: 0.3, unit: mm }
+      plating:
+        pth_aspect_ratio:        { value: 4, unit: ratio, note: "参考值" }
+      solder_mask:
+        type: "LPI / 覆盖膜"
+        min_opening:          { value: 0.09, unit: mm }
+        min_bridge_by_copper:
+          - { copper_oz: 1,   value: 0.10, unit: mm }
+      silkscreen:
+        min_line_width:      { value: 0.15, unit: mm }
+        min_clearance:       { value: 0.15, unit: mm }
+        min_char_size:       { width_mil: 6.6, height_mil: 39.4 }
+      surface_finish:
+        ENIG:      { type: "沉金" }
+        OSP:       { type: "抗氧化", note: "FPC 暂不支持 OSP" }
+      test:
+        min_pad_2wire: { value: 0.25, unit: mm }

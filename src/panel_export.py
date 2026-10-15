@@ -72,10 +72,15 @@ def view_to_image(view: dict, width_px: int = 1300,
     for f in view.get("features", []):
         t = f.get("type")
         if t == "vcut":
-            draw.line([tx(f["x1"]), ty(f["y1"]), tx(f["x2"]), ty(f["y2"])], fill=(198, 40, 40), width=1)
+            draw.line([tx(f["x1"]), ty(f["y1"]), tx(f["x2"]), ty(f["y2"])],
+                      fill=(198, 40, 40), width=2 if f.get("solid") else 1)
         elif t == "stamp":
-            r = 1.6
-            draw.ellipse([tx(f["x"]) - r, ty(f["y"]) - r, tx(f["x"]) + r, ty(f["y"]) + r], fill=(85, 85, 85))
+            r = max(1.0, (f.get("d") or 0.5) / 2 * scale)
+            draw.ellipse([tx(f["x"]) - r, ty(f["y"]) - r, tx(f["x"]) + r, ty(f["y"]) + r],
+                         fill=(85, 85, 85))
+        elif t == "midcut":
+            draw.line([tx(f["x1"]), ty(f["y1"]), tx(f["x2"]), ty(f["y2"])],
+                      fill=(0, 105, 92), width=max(1, int((f.get("w") or 2.0) * scale)))
         elif t == "break_off":
             draw.rectangle([tx(0), ty(f["h"]), tx(f["w"]), ty(0)], outline=(10, 122, 58), width=2)
         elif t == "rib":

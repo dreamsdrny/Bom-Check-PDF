@@ -20,6 +20,15 @@ from src.skill_generator import generate_skill_script
 from src.report_generator import generate_excel_report, generate_text_report, write_analysis_json
 from src.checklist_auto_fill import auto_fill_checklist, generate_checklist_summary
 from src.checklist_reader import read_checklist_excel
+
+
+def _factory_choices():
+    """板厂列表 (来自能力库注册表, 便于新增板厂)"""
+    try:
+        from src.dfm_engine import list_factories
+        return list(list_factories())
+    except Exception:
+        return ["hongban", "sihui", "jlcpcb"]
 from src.branding import win_title
 
 
@@ -78,7 +87,7 @@ class BRD_AIGUI:
 
         ttk.Label(opt_frame, text="Factory:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
         factory_combo = ttk.Combobox(opt_frame, textvariable=self.factory,
-                                     values=["hongban", "sihui"], state="readonly", width=8)
+                                     values=_factory_choices(), state="readonly", width=10)
         factory_combo.grid(row=0, column=1, sticky=tk.W)
         factory_combo.bind("<<ComboboxSelected>>", lambda e: self._sync_level_combo())
 
@@ -552,8 +561,8 @@ class DFMDialog:
         ttk.Label(top, text="板厂:").pack(side=tk.LEFT)
         self.factory = tk.StringVar(value="hongban")
         self.factory_combo = ttk.Combobox(top, textvariable=self.factory,
-                                          values=["hongban", "sihui"],
-                                          state="readonly", width=8)
+                                          values=_factory_choices(),
+                                          state="readonly", width=10)
         self.factory_combo.pack(side=tk.LEFT, padx=(2, 12))
         self.factory_combo.bind("<<ComboboxSelected>>", lambda e: self._sync_levels())
 

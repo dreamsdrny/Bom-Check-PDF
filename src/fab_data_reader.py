@@ -74,6 +74,9 @@ class GerberResult:
         self.ap_usage: Dict[int, int] = {}
         self.feature_count = 0
         self.file_name = ""
+        self.file_function = ""       # X2: %TF.FileFunction (Copper,L1,Top / SolderMask,Top / Profile ...)
+        self.file_part = ""           # X2: %TF.Part
+        self.aperture_function = ""   # X2: %TA.AperFunction (Conductor/Pad/Via/CopperBalancing...)
 
     def add_point(self, x, y):
         b = self.bbox
@@ -216,6 +219,20 @@ def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
             if "%" in line:
                 in_macro = False
             continue
+        if line.startswith("%TF"):
+            body = line.strip("%").rstrip("*")
+            parts = body.split(",")
+            if parts and parts[0] == "TF.FileFunction":
+                res.file_function = ",".join(parts[1:]).strip()
+            elif parts and parts[0] == "TF.Part":
+                res.file_part = ",".join(parts[1:]).strip()
+            continue
+        if line.startswith("%TA"):
+            body = line.strip("%").rstrip("*")
+            parts = body.split(",")
+            if parts and parts[0] == "TA.AperFunction":
+                res.aperture_function = ",".join(parts[1:]).strip()
+            continue
         if line.startswith("%"):
             continue
         if cmd.startswith("G36"):
@@ -349,6 +366,9 @@ def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
         "min_line_width_mm": _min_line_width(res),
         "min_pad_mm": _min_pad(res),
         "aperture_count": len(res.apertures),
+        "file_function": res.file_function,
+        "file_part": res.file_part,
+        "aperture_function": res.aperture_function,
     }
     return data
 

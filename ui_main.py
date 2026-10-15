@@ -1,11 +1,26 @@
 """
-Evan_DFM: 多级图形界面
-=============================================
-一级界面 (MainLauncher): 导航首页, 提供四个相互独立的二级界面入口:
-    分析BRD      -> BRD_AIGUI        (Cadence Allegro BRD 约束/Checklist)
-    分析Gerber   -> FabWindow(gerber)(Gerber RS-274X + NC Drill 解析/完整性/网络比对)
-    分析ODB      -> FabWindow(odb++) (ODB++ 解析/完整性/网络比对)
-    DFM          -> DFMDialog        (制程能力分析 + 报告; 含自动拼板入口)
+Evan_DFM / Asher_DFM: 多级图形界面 (一级导航)
+=================================================
+程序框架 (分层):
+  入口层    evan_dfm.py / asher_dfm.py / main.py(CLI) / gui.py / layout_brd.py
+  品牌层    src/branding.py (程序名/标题/图标/AppUserModelID, 支持多品牌)
+  界面层    ui_main.MainLauncher (一级)
+              ├─ DFM 检查中心     src/dfm_hub_ui.DfmHubWindow   (二级 → 三级结果/定位/报告)
+              ├─ 分析BRD          gui.BRD_AIGUI
+              ├─ 分析BRD-DFM      src/brd_dfm_ui.BrdDFMWindow
+              ├─ 分析Gerber/ODB   ui_main.FabWindow
+              ├─ 制程能力 DFM     gui.DFMDialog
+              ├─ 排版设计         src/panel_ui.PanelDesigner
+              └─ Gerber查看器     src/gerber_viewer.GerberViewer
+  编排层    src/dfm_hub.run_hub (多模块统一编排) / src/brd_dfm (BRD 编排)
+  分析层    dfm_engine(能力库) dfm_geometry(几何) dfm_netlist(开短路)
+            fab_data_reader(Gerber/ODB/Drill) panel_engine(拼版)
+  数据层    brd_extracta(extracta) / skill_export(.il) / brd_geometry(JSON→设计模型)
+            dxf_reader / pdf_reader
+  输出层    dfm_report(Valor式 Excel/文本) dfm_snap(截图) report_generator
+            fab_viewer / gerber_viewer(交叉定位) panel_export(PNG/PDF)
+  规则模型  src/dfm_rules (统一 Issue: code/severity/measured/required/x/y/suggestion)
+  配置      config/*.yaml (checklist_rules / dfm_capability_*)
 
 每个二级界面均为独立 Toplevel, 拥有各自的输入/日志/结果状态, 互不干扰。
 """
@@ -20,6 +35,7 @@ from gui import BRD_AIGUI, DFMDialog, PanelDialog
 from src.panel_ui import PanelDesigner
 from src.gerber_viewer import GerberViewer
 from src.brd_dfm_ui import BrdDFMWindow
+from src.dfm_hub_ui import DfmHubWindow
 from src.branding import APP_NAME, win_title
 from src.win_dpi import apply_window, enable_dpi_awareness, set_app_user_model_id
 
@@ -28,7 +44,7 @@ class MainLauncher:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(win_title())
-        apply_window(self.root, 760, 560)
+        apply_window(self.root, 880, 680)
         self.root.resizable(True, True)
         self._windows = {}
         self._build_ui()
@@ -46,11 +62,12 @@ class MainLauncher:
         grid.pack(fill=tk.BOTH, expand=True)
 
         cards = [
+            ("DFM 检查中心", "多模块统一编排 (多级界面)\n能力/几何/开短路/制造数据/网络比对/拼版\n统一分级报告 + 交叉定位 + 风险评分", self._open_dfm_hub, "#C00000"),
+            ("分析BRD-DFM", "直接读 .brd (extracta 无界面提取)\n几何DFM定位XY / 开短路 / 网表 / Valor报告", self._open_brd_dfm, "#843C0C"),
             ("分析BRD", "读取 Allegro .brd\n生成约束/Checklist/DFM 校验", self._open_brd, "#2F5496"),
-            ("分析BRD-DFM", "直接读 .brd (extracta 无界面提取)\n几何DFM定位XY / 开短路 / 网表 / Valor报告", self._open_brd_dfm, "#C00000"),
             ("分析Gerber", "RS-274X + NC Drill 解析\n完整性检查 / 网络比对 / 交叉定位", self._open_gerber, "#0a7a3a"),
             ("分析ODB", "ODB++ 工程解析\n完整性检查 / 网络比对 / 交叉定位", self._open_odb, "#B8860B"),
-            ("DFM", "板厂制程能力比对\n问题分级报告 / 风险评分 / 自动拼板", self._open_dfm, "#7030A0"),
+            ("制程能力 DFM", "板厂制程能力比对 (参数化)\n问题分级报告 / 风险评分", self._open_dfm, "#7030A0"),
         ]
         for i, (title, desc, cmd, color) in enumerate(cards):
             card = ttk.LabelFrame(grid, text=title, padding=12)
@@ -71,6 +88,11 @@ class MainLauncher:
                   anchor=tk.W).pack(fill=tk.X, side=tk.BOTTOM, pady=(10, 0))
 
     # ---- 二级界面入口 (相互独立) ----
+    def _open_dfm_hub(self):
+        win = DfmHubWindow(self.root)
+        self._windows.setdefault("dfm_hub", []).append(win)
+        self.status_var.set("已打开: DFM 检查中心 (多模块统一编排)")
+
     def _open_brd(self):
         win = BRD_AIGUI(self.root)
         self._windows.setdefault("brd", []).append(win)

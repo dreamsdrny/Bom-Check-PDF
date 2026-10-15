@@ -306,8 +306,8 @@ Examples:
     )
     parser.add_argument(
         "--factory", type=str, default="hongban",
-        choices=["hongban", "sihui"],
-        help="板厂制程能力库: hongban(板厂A)/sihui(板厂B)` (默认: hongban)"
+        choices=["hongban", "sihui", "jlcpcb"],
+        help="板厂制程能力库: hongban(板厂A)/sihui(板厂B)/jlcpcb(嘉立创) (默认: hongban)"
     )
     parser.add_argument(
         "--fab", type=str, default=None, metavar="PATH",
@@ -336,7 +336,109 @@ Examples:
              "做几何DFM(定位XY)+开短路+网表测试, 输出 Valor 式报告"
     )
 
+    parser.add_argument(
+        "--dfm-hub", action="store_true", dest="dfm_hub",
+        help="DFM 检查中心: 统一编排 能力/几何/开短路/制造数据/网络比对/拼版 多模块检查, 输出单一 Valor 式报告"
+    )
+    parser.add_argument(
+        "--hub-modules", type=str, default=None, dest="hub_modules", metavar="LIST",
+        help="逗号分隔的检查模块: capability,geometry,netlist,fab,fabnet,panel (默认全部)"
+    )
+    parser.add_argument(
+        "--design-params", type=str, default=None, dest="design_params", metavar="JSON",
+        help="DFM 检查中心: 设计参数 JSON (capability 模块; 亦可用 --dfm 指定)"
+    )
+    parser.add_argument(
+        "--panel-params", type=str, default=None, dest="panel_params", metavar="JSON",
+        help="DFM 检查中心: 拼版参数 JSON (panel 模块)"
+    )
+    parser.add_argument(
+        "--board-thickness", type=float, default=None, dest="board_thickness", metavar="MM",
+        help="板厚(mm): Gerber/ODB++ 无板厚信息, 指定后才能做 PTH 纵横比检查"
+    )
+    parser.add_argument(
+        "--gerber-dfm", type=str, default=None, dest="gerber_dfm", metavar="PATH",
+        help="Gerber DFM: 对 Gerber/ODB++/NC Drill 目录或文件做几何 DFM(定位XY)+开短路+网表, "
+             "等价于 --dfm-hub 以制造数据为源"
+    )
+
     args = parser.parse_args()
+
+    if args.dfm_hub or args.gerber_dfm:
+        from src.dfm_hub import CHECK_MODULES, run_hub
+        from src.dfm_report import generate_dfm_excel, generate_dfm_text
+
+        src = args.gerber_dfm or args.brd_dfm or args.brd or None
+        stype = "none"
+        if src:
+            if not os.path.exists(src):
+                print(f"[ERROR] 数据源不存在: {src}")
+                sys.exit(1)
+            if args.gerber_dfm:
+                stype = "gerber"
+            elif src.lower().endswith(".brd"):
+                stype = "brd"
+            else:
+                stype = "json"
+        mods = ([m.strip() for m in args.hub_modules.split(",") if m.strip()]
+                if args.hub_modules else [m[0] for m in CHECK_MODULES])
+        cfg = {
+            "source_type": stype,
+            "source_path": src or "",
+            "fab_path": args.fab,
+            "cad_nets": args.cad_nets,
+            "design_params": args.design_params or (args.dfm if args.dfm and args.dfm != "template" else None),
+            "panel_params": args.panel_params,
+            "factory": args.factory,
+            "board_type": args.board_type,
+            "capability_level": args.capability,
+            "copper_um": args.copper,
+            "copper_oz": args.copper_oz,
+            "board_thickness": args.board_thickness,
+            "modules": mods,
+        }
+        print("=" * 70)
+        print("  DFM 检查中心 (多模块统一编排)")
+        print("=" * 70)
+        print(f"  数据源: {stype} {src or '-'}   制造数据: {args.fab or '-'}")
+        print(f"  模块:   {', '.join(mods)}")
+        print(f"  规则集: {args.factory} / {args.board_type} / {args.capability} / 铜厚 {args.copper}um")
+        print("-" * 70)
+        result = run_hub(cfg, progress=lambda m: print(f"  {m}"))
+        s = result["issue_summary"]
+        risk = result["risk"]
+        print("-" * 70)
+        print(f"  已执行模块: {', '.join(result.get('modules_run', [])) or '(无)'}")
+        print(f"  问题总数: {s.get('总计', 0)}  (危险 {s.get('危险',0)} / 高 {s.get('高',0)} / "
+              f"中 {s.get('中',0)} / 低 {s.get('低',0)})")
+        print(f"  可制造性评分: {risk.get('score')}/100   风险等级: {risk.get('risk_level')}   "
+              f"结论: {risk.get('verdict')}")
+        for it in result["issues"]:
+            loc = f" @({it['x']:.2f},{it['y']:.2f})" if it.get("x") is not None else ""
+            print(f"  [{it['severity']}] {it['code']} {it.get('module','')} {it['rule']}: "
+                  f"{it['description']}{loc}")
+        out_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+        meta = result.get("board_meta") or {}
+        xlsx_out = generate_dfm_excel(result, os.path.join(out_dir, "dfm_hub_report.xlsx"), meta)
+        txt_out = generate_dfm_text(result, os.path.join(out_dir, "dfm_hub_report.txt"), meta)
+        json_out = os.path.join(out_dir, "dfm_hub_analysis.json")
+        slim = {k: v for k, v in result.items()
+                if k not in ("fab_data", "instances", "capability_items")}
+        with open(json_out, "w", encoding="utf-8") as f:
+            json.dump(slim, f, indent=2, ensure_ascii=False, default=str)
+        print("-" * 70)
+        print(f"  报告(Excel): {xlsx_out}")
+        print(f"  报告(Text):  {txt_out}")
+        print(f"  报告(JSON):  {json_out}")
+        if args.view and result.get("fab_data"):
+            import tkinter as tk
+            from src.fab_viewer import FabViewer
+            root = tk.Tk()
+            root.withdraw()
+            FabViewer(root, result["fab_data"], result["issues"], title="DFM 检查中心 - 交叉定位")
+            root.mainloop()
+        return
 
     if args.skill_export is not None:
         from src.skill_export import write_export_skill, EXPORT_SKILL_FILENAME

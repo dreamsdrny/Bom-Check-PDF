@@ -132,6 +132,17 @@ def analyze_brd_file(brd_path: str, factory: str = DEFAULT_FACTORY,
                     copper_um, copper_oz, fab_path, source_path=brd_path)
 
 
+def analyze_design_model(design: BrdDesign, factory: str = DEFAULT_FACTORY,
+                         board_type: str = "rigid", capability_level: str = "standard",
+                         copper_um: float = 35.0, copper_oz: Optional[float] = None,
+                         fab_path: Optional[str] = None, source_path: str = "") -> dict:
+    """对已构建的 BrdDesign 执行完整分析。
+    供其它数据源适配器复用 (如 src.gerber_design: Gerber/ODB++ → BrdDesign)。
+    """
+    return _analyze(design, factory, board_type, capability_level,
+                    copper_um, copper_oz, fab_path, source_path=source_path)
+
+
 def _analyze(design: BrdDesign, factory: str, board_type: str,
              capability_level: str, copper_um: float,
              copper_oz: Optional[float], fab_path: Optional[str],

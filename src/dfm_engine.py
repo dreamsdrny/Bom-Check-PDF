@@ -22,11 +22,13 @@ DEFAULT_FACTORY = "hongban"
 FACTORY_FILES = {
     "hongban": "dfm_capability_hongban.yaml",
     "sihui": "dfm_capability_sihui.yaml",
+    "jlcpcb": "dfm_capability_jlcpcb.yaml",
 }
 
 FACTORY_LABELS = {
     "hongban": "板厂A",
     "sihui": "板厂B",
+    "jlcpcb": "嘉立创(JLCPCB)",
 }
 
 FACTORY_ALIASES = {
@@ -35,6 +37,10 @@ FACTORY_ALIASES = {
     "板厂A": "hongban",
     "sihui": "sihui",
     "板厂B": "sihui",
+    "jlcpcb": "jlcpcb",
+    "jlc": "jlcpcb",
+    "嘉立创": "jlcpcb",
+    "立创": "jlcpcb",
 }
 
 LEVEL_ALIASES = {

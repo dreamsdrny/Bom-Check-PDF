@@ -184,7 +184,7 @@ def _read_checklist_rows(excel_path: str) -> List[dict]:
 
 
 def _determine_check_result(item: dict, analysis_result: dict) -> Tuple[str, str, str]:
-    item_no = item["no"] 
+    item_no = item["no"]  # 
     standard = item["standard"] 
     item_text = item["items"]
 
@@ -271,22 +271,22 @@ def auto_fill_checklist(
 
         approved_text = f"{checker_name} / {timestamp}" if not static_approver else static_approver
 
-        cell_check = ws.cell(row_idx, 8)
+        cell_check = ws.cell(row_idx, 8) # 填写Check列
         if not cell_check.value or str(cell_check.value).strip() in ("", "None"):
-            cell_check.value = check_text
-            cell_check.fill = fill
+            cell_check.value = check_text 
+            cell_check.fill = fill # 填充颜色
             cell_check.font = Font(name="Arial", size=10, bold=True)
             cell_check.alignment = Alignment(horizontal="center", vertical="center")
             cell_check.border = THIN_BORDER
 
-        cell_approved = ws.cell(row_idx, 9)
+        cell_approved = ws.cell(row_idx, 9) # 填写Approved列    
         if not cell_approved.value or str(cell_approved.value).strip() in ("", "None"):
             cell_approved.value = approved_text
-            cell_approved.font = Font(name="Arial", size=9)
+            cell_approved.font = Font(name="Arial", size=9) # 填写Approved列字体
             cell_approved.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell_approved.border = THIN_BORDER
 
-        note_col = ws.cell(row_idx, 7)
+        note_col = ws.cell(row_idx, 7) # 填写Note列
         if detail and detail != "标准已满足":
             existing_note = str(note_col.value or "")
             if existing_note and existing_note != "None":
@@ -298,8 +298,8 @@ def auto_fill_checklist(
         stats["total"] += 1
 
     # Add summary sheet
-    if "summary" in [s.lower() for s in wb.sheetnames]:
-        summary_ws = wb["summary"]
+    if "summary" in [s.lower() for s in wb.sheetnames]: 
+        summary_ws = wb["summary"] #
     else:
         summary_ws = wb.create_sheet("summary")
 

@@ -1,3 +1,79 @@
+# 程序框架 (分层)
+
+```
+入口层    evan_dfm.py(Evan_DFM) / asher_dfm.py(Asher_DFM) / main.py(CLI) / gui.py / layout_brd.py
+品牌层    src/branding.py       程序名·标题·图标·AppUserModelID (多品牌: set_brand / DFM_BRAND)
+界面层    ui_main.MainLauncher  ← 一级导航 (每张卡片 = 一个独立二级窗口)
+            ├─ DFM 检查中心    src/dfm_hub_ui.DfmHubWindow   (二级 → 三级: 清单/统计/交叉定位/报告)
+            ├─ 分析BRD-DFM     src/brd_dfm_ui.BrdDFMWindow   (①导出SKILL ②选源 ③分析 ④定位 ⑤报告)
+            ├─ 分析BRD         gui.BRD_AIGUI                 (约束/Checklist/SKILL)
+            ├─ 分析Gerber/ODB  ui_main.FabWindow
+            ├─ 制程能力 DFM    gui.DFMDialog
+            ├─ 排版设计        src/panel_ui.PanelDesigner     (PCS/ARRAY/PANEL 三图联动)
+            └─ Gerber查看器    src/gerber_viewer.GerberViewer (多图层 + 叠加对比)
+编排层    src/dfm_hub.run_hub   ← 多模块统一编排 (能力/几何/开短路/制造数据/网络比对/拼版)
+          src/brd_dfm           ← BRD 专用编排 (extracta 或 SKILL JSON)
+分析层    dfm_engine(能力库比对) dfm_geometry(几何DFM·定位XY) dfm_netlist(开短路/网表)
+          fab_data_reader(Gerber/ODB++/NC Drill 解析·完整性·网络比对) panel_engine(拼版)
+数据层    brd_extracta(Allegro extracta 无界面提取) / skill_export(.il) / brd_geometry(JSON→设计模型)
+          dxf_reader(外形) / pdf_reader(参考底图)
+输出层    dfm_report(Valor式 Excel/文本: Main·Issue summary·Info·Issue1..N)
+          dfm_snap(违例截图) report_generator(约束报告) panel_export(PNG/PDF)
+          fab_viewer / gerber_viewer(图形交叉定位)
+规则模型  src/dfm_rules         统一 Issue: code·category·rule·severity·measured·required·x/y·suggestion
+配置      config/checklist_rules.yaml
+          config/dfm_capability_hongban.yaml | _sihui.yaml | _jlcpcb.yaml(嘉立创公开能力表)
+          samples/brd_export_sample.json (无 Allegro 时可试跑)
+```
+
+DFM 数据流（两种源 → 同一 schema → 同一报告）:
+
+```
+直接: brd_extracta(extracta 无界面读 .brd) ┐
+备选: skill_export(.il) →[Allegro 运行]    ┘→ brd_geometry(JSON)
+        → dfm_geometry(几何 DFM, 定位XY) + dfm_netlist(开短路/网表)
+        → dfm_hub / brd_dfm(编排) → dfm_report(Valor式) + fab_viewer(交叉定位)
+制造数据: fab_data_reader(Gerber/ODB++/Drill) → 完整性 + CAD vs FAB 网络比对
+参数化:  dfm_engine.analyze_design(设计参数 vs 板厂能力库)
+拼版:    panel_engine(PCS/ARRAY/PANEL) → 拼版 DFM 问题
+```
+
+# DFM 检查中心（多级界面 + 多模块）
+
+一级(首页卡片) → 二级(检查中心: 数据源 + 规则集 + 模块勾选 + 执行) → 三级(问题清单 / 统计与评分 / 交叉定位 / 报告导出)。
+
+| 模块 | 说明 | 依赖 |
+|---|---|---|
+| capability | 制程能力 DFM：设计参数 vs 板厂能力库 | 设计参数 JSON |
+| geometry | 几何 DFM：线宽/线距/孔环/孔径/纵横比/板边/阻焊桥/DRC，**定位 XY** | .brd(extracta) 或导出 JSON |
+| netlist | 开短路 + 网表一致性 | 同上 |
+| fab | 制造数据完整性（Gerber/ODB++/NC Drill） | 制造数据目录 |
+| fabnet | CAD vs FAB 网络比对（Open/Short） | 制造数据 + CAD 网表 JSON |
+| panel | 拼版/工艺边 DFM | 拼版参数 JSON |
+
+命令行等价：
+
+```powershell
+# 参数化 + 拼版 (嘉立创能力库)
+python main.py --dfm-hub --design-params design.json --panel-params panel.json --factory jlcpcb
+
+# BRD 几何 + 开短路 + 网表 (extracta 或 SKILL 导出 JSON)
+python main.py --dfm-hub --brd-dfm board.brd
+python main.py --dfm-hub --brd-dfm samples\brd_export_sample.json
+
+# 叠加制造数据与网络比对
+python main.py --dfm-hub --brd-dfm board.brd --fab .\gerbers --cad-nets cad_nets.json
+
+# 只跑指定模块
+python main.py --dfm-hub --brd-dfm board.brd --hub-modules geometry,netlist
+```
+
+输出：`output/dfm_hub_report.xlsx`（Main / Issue summary / Info / Issue1..N）、`dfm_hub_report.txt`、`dfm_hub_analysis.json`。
+
+板厂能力库：`hongban`(板厂A) / `sihui`(板厂B) / `jlcpcb`(嘉立创，来自其公开能力表：按铜厚分档线宽线距、PTH/NPTH 孔环、各类间距、阻焊桥按铜厚、丝印 0.15mm/字高 1.0mm、拼板 V-Cut/邮票孔/工艺边/Mark、HDI 盲埋孔、背钻、castellated 等)。
+
+---
+
 入口层   main.py / gui.py / ui_main.py / layout_brd.py / evan_dfm.py
           │
 核心管线  pcb_reader → signal_classifier → rule_engine → dfm_engine → skill_generator → report_generator
