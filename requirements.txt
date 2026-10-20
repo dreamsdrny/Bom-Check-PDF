@@ -1,0 +1,9 @@
+# Evan DFM 运行依赖
+# 安装: pip install -r requirements.txt
+PySide6>=6.5          # 桌面界面 (Qt for Python)
+openpyxl>=3.1         # Excel 报告 (Valor 式多页工作簿)
+PyYAML>=6.0           # 制程能力库 / 规则集
+Pillow>=9.0           # 报告内嵌版图截图 (可选但推荐)
+
+# 可选 (仅测试):
+# pytest>=7.0         # 亦可用标准库: python -m unittest discover -s tests

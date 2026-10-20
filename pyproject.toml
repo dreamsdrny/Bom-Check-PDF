@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evan-dfm"
+version = "1.0.0"
+description = "Evan DFM — PCB 可制造性(DFM)专业分析软件 (Gerber/ODB++/Allegro BRD)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "Evan" }]
+keywords = ["PCB", "DFM", "Gerber", "ODB++", "Allegro", "SMT", "manufacturing"]
+dependencies = [
+    "PySide6>=6.5",
+    "openpyxl>=3.1",
+    "PyYAML>=6.0",
+    "Pillow>=9.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+evan-dfm = "dfm.app:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["dfm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

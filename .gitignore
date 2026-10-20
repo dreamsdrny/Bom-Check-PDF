@@ -2,13 +2,20 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+.eggs/
 
-# Build artifacts (PyInstaller)
+# 打包产物 (PyInstaller)
 dist/
 build/
-*.spec
+*.manifest.bak
 
-# Virtual environments
+# 分析输出 (报告/中间数据) 不入库
+output/
+reports/
+*.dfmproj
+
+# 虚拟环境
 .venv/
 venv/
 env/
@@ -21,11 +28,9 @@ env/
 # OS
 Thumbs.db
 Desktop.ini
+.DS_Store
 
-# Logs / temp
+# 日志 / 临时
 *.log
 *.dmp
-
-# output: only auto_constraint.il is tracked
-output/*
-!output/auto_constraint.il
+*.tmp

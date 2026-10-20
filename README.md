@@ -1,172 +1,133 @@
-# 程序框架 (分层)
+# Evan DFM — PCB 可制造性(DFM)专业分析软件
 
-```
-入口层    evan_dfm.py(Evan_DFM) / asher_dfm.py(Asher_DFM) / main.py(CLI) / gui.py / layout_brd.py
-品牌层    src/branding.py       程序名·标题·图标·AppUserModelID (多品牌: set_brand / DFM_BRAND)
-界面层    ui_main.MainLauncher  ← 一级导航 (每张卡片 = 一个独立二级窗口)
-            ├─ DFM 检查中心    src/dfm_hub_ui.DfmHubWindow   (二级 → 三级: 清单/统计/交叉定位/报告)
-            ├─ 分析BRD-DFM     src/brd_dfm_ui.BrdDFMWindow   (①导出SKILL ②选源 ③分析 ④定位 ⑤报告)
-            ├─ 分析BRD         gui.BRD_AIGUI                 (约束/Checklist/SKILL)
-            ├─ 分析Gerber/ODB  ui_main.FabWindow
-            ├─ 制程能力 DFM    gui.DFMDialog
-            ├─ 排版设计        src/panel_ui.PanelDesigner     (PCS/ARRAY/PANEL 三图联动)
-            └─ Gerber查看器    src/gerber_viewer.GerberViewer (多图层 + 叠加对比)
-编排层    src/dfm_hub.run_hub   ← 多模块统一编排 (能力/几何/开短路/制造数据/网络比对/拼版)
-          src/brd_dfm           ← BRD 专用编排 (extracta 或 SKILL JSON)
-分析层    dfm_engine(能力库比对) dfm_geometry(几何DFM·定位XY) dfm_netlist(开短路/网表)
-          fab_data_reader(Gerber/ODB++/NC Drill 解析·完整性·网络比对) panel_engine(拼版)
-数据层    brd_extracta(Allegro extracta 无界面提取) / skill_export(.il) / brd_geometry(JSON→设计模型)
-          dxf_reader(外形) / pdf_reader(参考底图)
-输出层    dfm_report(Valor式 Excel/文本: Main·Issue summary·Info·Issue1..N)
-          dfm_snap(违例截图) report_generator(约束报告) panel_export(PNG/PDF)
-          fab_viewer / gerber_viewer(图形交叉定位)
-规则模型  src/dfm_rules         统一 Issue: code·category·rule·severity·measured·required·x/y·suggestion
-配置      config/checklist_rules.yaml
-          config/dfm_capability_hongban.yaml | _sihui.yaml | _jlcpcb.yaml(嘉立创公开能力表)
-          samples/brd_export_sample.json (无 Allegro 时可试跑)
-```
+面向 PCB 制造与 SMT 装配的桌面级 DFM 分析平台：导入 **Allegro .brd / SKILL·extracta 导出 JSON / Gerber(RS-274X) / ODB++ / NC 钻孔**，
+按**板厂制程能力库**逐条判定，输出带 **XY 定位**的分级问题清单、**可制造性评分**与 **Valor 式报告**，并支持在版图上交叉定位。
 
-DFM 数据流（两种源 → 同一 schema → 同一报告）:
-
-```
-直接: brd_extracta(extracta 无界面读 .brd) ┐
-备选: skill_export(.il) →[Allegro 运行]    ┘→ brd_geometry(JSON)
-        → dfm_geometry(几何 DFM, 定位XY) + dfm_netlist(开短路/网表)
-        → dfm_hub / brd_dfm(编排) → dfm_report(Valor式) + fab_viewer(交叉定位)
-制造数据: fab_data_reader(Gerber/ODB++/Drill) → 完整性 + CAD vs FAB 网络比对
-参数化:  dfm_engine.analyze_design(设计参数 vs 板厂能力库)
-拼版:    panel_engine(PCS/ARRAY/PANEL) → 拼版 DFM 问题
-```
-
-# DFM 检查中心（多级界面 + 多模块）
-
-一级(首页卡片) → 二级(检查中心: 数据源 + 规则集 + 模块勾选 + 执行) → 三级(问题清单 / 统计与评分 / 交叉定位 / 报告导出)。
-
-| 模块 | 说明 | 依赖 |
-|---|---|---|
-| capability | 制程能力 DFM：设计参数 vs 板厂能力库 | 设计参数 JSON |
-| geometry | 几何 DFM：线宽/线距/孔环/孔径/纵横比/板边/阻焊桥/DRC，**定位 XY** | .brd(extracta) 或导出 JSON |
-| netlist | 开短路 + 网表一致性 | 同上 |
-| fab | 制造数据完整性（Gerber/ODB++/NC Drill） | 制造数据目录 |
-| fabnet | CAD vs FAB 网络比对（Open/Short） | 制造数据 + CAD 网表 JSON |
-| panel | 拼版/工艺边 DFM | 拼版参数 JSON |
-
-命令行等价：
-
-```powershell
-# 参数化 + 拼版 (嘉立创能力库)
-python main.py --dfm-hub --design-params design.json --panel-params panel.json --factory jlcpcb
-
-# BRD 几何 + 开短路 + 网表 (extracta 或 SKILL 导出 JSON)
-python main.py --dfm-hub --brd-dfm board.brd
-python main.py --dfm-hub --brd-dfm samples\brd_export_sample.json
-
-# 叠加制造数据与网络比对
-python main.py --dfm-hub --brd-dfm board.brd --fab .\gerbers --cad-nets cad_nets.json
-
-# 只跑指定模块
-python main.py --dfm-hub --brd-dfm board.brd --hub-modules geometry,netlist
-```
-
-输出：`output/dfm_hub_report.xlsx`（Main / Issue summary / Info / Issue1..N）、`dfm_hub_report.txt`、`dfm_hub_analysis.json`。
-
-板厂能力库：`hongban`(板厂A) / `sihui`(板厂B) / `jlcpcb`(嘉立创，来自其公开能力表：按铜厚分档线宽线距、PTH/NPTH 孔环、各类间距、阻焊桥按铜厚、丝印 0.15mm/字高 1.0mm、拼板 V-Cut/邮票孔/工艺边/Mark、HDI 盲埋孔、背钻、castellated 等)。
+规则库全部外置为 YAML，检查项以插件方式注册 —— 不改代码即可换标准、加规则、扩展新检查。
 
 ---
 
-入口层   main.py / gui.py / ui_main.py / layout_brd.py / evan_dfm.py
-          │
-核心管线  pcb_reader → signal_classifier → rule_engine → dfm_engine → skill_generator → report_generator
-          │                    checklist_reader / checklist_auto_fill
-          │
-DFM/制造  dfm_rules(基础Issue模型) ← dfm_report / fab_data_reader / fab_viewer / panelizer / panel_engine
-           │
-BRD-DFM   直接: brd_extracta(extracta无界面读.brd) ┐
-          备选: skill_export(导出.il)→[Allegro运行] ┘→ brd_geometry(读JSON) → dfm_geometry(几何DFM定位XY) + dfm_netlist(开短路/网表) → brd_dfm(编排) → dfm_report(Valor式) / fab_viewer(交叉定位)
-           │
-拼版/查看  panel_engine + panel_ui + panel_export + panelizer + dxf_reader + pdf_reader
-          │
-配置      config/*.yaml (checklist_rules / dfm_capability_hongban / dfm_capability_sihui)
+## 核心能力
 
+| 能力 | 说明 |
+| --- | --- |
+| 多源解析 | Allegro `.brd`（extracta 无界面提取）、SKILL/extracta 导出 JSON、Gerber RS-274X（含 X2 属性）、ODB++ 工程、Excellon 钻孔 |
+| 制造 DFM | 最小线宽/线距（按成品铜厚分档）、单边孔环、机械孔/激光孔径、PTH 纵横比、线路到板边、阻焊桥、丝印、塞孔、覆盖膜、表面处理、电测 PAD |
+| 装配 / SMT DFM | 器件间距、器件/焊盘到板边、片式焊盘对称性（墓碑）、细间距与 BGA 孔环、Via in Pad、丝印上焊盘、基准点数量与尺寸、测试点覆盖率/尺寸/到板边 |
+| 开短路与网表 | 几何连通性判定开路/短路（定位 XY）、逻辑网表一致性、CAD vs FAB 网络比对 |
+| 拼板 / 工艺边 | 工作板尺寸、工艺边宽度、Mark 点数量与位置、定位孔、板材利用率 |
+| 制造数据完整性 | 缺层、单位/格式声明、光圈未定义、坐标越界、孤立孔、层原点偏移 |
+| 评分与报告 | 可制造性评分（可配权重）、良率区间、Excel（多页 + 内嵌版图截图）、HTML（交互式单文件）、JSON、TXT、SVG |
+| 自定义规则引擎 | `rules/capability/*.yaml` 板厂能力库自动发现；`rules/checks.yaml` 控制开关/阈值/严重度/评分；声明式 `custom_rules` 无需写代码 |
+| 二次开发 | 检查项插件注册、页面基类、统一 `analysis` 数据结构、CLI 与 JSON 输出 |
 
-一、软件定位
-项目打包出的 GUI 单机版，产物位于 dist\Layout-brd\。入口为 layout_brd.py，实际界面来自 gui.py:25 的 BRD_AIGUI，打包时额外套用了 evan.ico 图标并**移除了 DFM 功能分析按钮**（layout_brd.py:53）。
+## 安装与启动
 
-核心作用：把 PCB Layout Checklist 规则 + PCB 厂制程能力 自动转换成 Cadence Allegro 可执行的 SKILL 约束脚本，并顺带生成约束报告、DFM 校验报告和已自动填写的 Checklist。
+```bat
+:: 1. 安装依赖 (Python 3.9+)
+pip install -r requirements.txt
 
-二、运行方式
-必须保留整个文件夹（含 _internal 目录），双击：
+:: 2. 启动图形界面
+python evan_dfm.py
+::   或
+python -m dfm gui
+```
 
-dist\Layout-brd\自动填写Check-List.exe
-不要单独把 exe 拷出来运行。
+打包为独立 exe：
 
-三、界面各区域
-1. Input Files（输入文件）
+```bat
+pip install pyinstaller
+build.bat            :: 产物 dist\EvanDFM.exe
+```
 
-BRD File：Cadence Allegro .brd 文件
-Checklist Excel：Layout Checklist 的 .xlsx
-Output Dir：输出目录（默认 output/）
-2. Options（选项）
+## 30 秒上手
 
-Factory：板厂 hongban(板厂A) / sihui(板厂B)
-Board Type：rigid(硬板) / flex(软板及软硬结合板)
-Capability：随板厂、板型联动的可用等级（standard / automotive / extreme，advanced 自动映射为 extreme）
-Copper(um) / (oz)：成品铜厚，影响线宽线距分档
-Auto-fill Checklist：默认勾选，启用后填 Check 与 Approved 列
-Checker Name：写入 Approved 列，默认 BRD-AI
-Net List (JSON)：可选，用 JSON 网络名列表替代 BRD
-3. Buttons（按钮）
+```bat
+:: 分析一个 Allegro 导出 JSON, 输出 Excel + HTML 报告
+python -m dfm analyze samples\brd_export_sample.json -o out --format excel,html
 
-Start Generation：需先选 BRD 或 Net List JSON
-Demo Run：内置 Demo Board 演示数据，无需任何输入
-Open Output Folder：打开输出目录
-4. Log / Progress / Status：彩色日志与进度条。
+:: 分析 Gerber 目录 (指定板厚才能判纵横比)
+python -m dfm analyze D:\gerber_dir --factory 板厂B --level automotive --thickness 1.6 -o out
 
-四、运行流程（7 步）
-gui.py:242 的后台流水线依次执行：
+:: 只看解析结果与自动量测参数
+python -m dfm info D:\board.json
 
-读取 PCB 数据（BRD / JSON / 演示）
-信号自动分类（20 类，DDR/PCIE/USB/MIPI/LVDS/ETH/RF… + 差分对识别）
-计算约束规则（线宽 / 间距 / 过孔 / 差分电气）
-DFM 制程能力校验
-生成 SKILL 脚本
-生成 Excel / 文本 / JSON 报告
-自动填写 Checklist（勾选且有 Checklist 时）
+:: 查看规则库 / 检查项
+python -m dfm rules list
+python -m dfm checks
+```
 
-五、分析BRD-DFM（几何定位XY + 开短路 + 网表测试，参考 Valor）
-Cadence .brd 为二进制专有格式，纯 Python 无法可靠解析几何坐标。本功能提供两种
-数据来源，二者产出同一 JSON schema，后续分析/报告完全一致：
+图形界面主流程：**数据源 → 检查与执行 → 问题清单 / 版图定位 → 报告导出**，
+判定标准在 **规则库** 页维护，环境与主题在 **设置** 页。
 
-【方式A｜直接读 .brd（推荐，全自动无界面）】
-本机装有 Allegro 时，用其自带命令行工具 extracta.exe **不打开 GUI** 直接提取
-网表/几何/DRC/叠层（坐标自动 mils→mm）：
-1. 首页『分析BRD-DFM』→『②』直接选择 .brd 文件，选板厂/板型/能力等级/铜厚
-2. 点『③ 执行分析』（大板约 1-2 分钟，后台 extracta 提取 + DFM 分析）
-3. 『④ 打开交叉定位』版图高亮每个 warning/fail 的 XY；『⑤ 导出报告』出 Valor 式报告
-命令行等价：
-   `python main.py --brd-dfm <board.brd> [--factory hongban] [--board-type rigid]
-    [--capability standard] [--copper 35] [--fab <gerber/odb目录>] [--view]`
-extracta 提取的视图：COMPONENT_PIN(网表含XY) / COMPOSITE_PAD(焊盘·过孔) /
-LAYER(叠层板厚) / NET(平均线宽) / CONNECTIVITY(未连ratsnest=开路) / COMPONENT /
-GEOMETRY(走线·板框) / DRC_ERROR(违规含XY) / PAD_DEF2(孔径·焊盘·镀通)。
+## 目录结构
 
-【方式B｜SKILL 导出（无 extracta / 需更细逐段线宽时）】
-1. 『① 导出SKILL脚本(.il)』或 `python main.py --skill-export`
-2. Allegro 内打开 .brd，执行 `skill load "brd_dfm_export.il"` 再 `brdExportJSON`
-3. 『②』选择导出的 JSON →『③ 执行分析』
+```
+DFM-AI/
+├─ evan_dfm.py            启动脚本 (GUI / cli / viewer)
+├─ build.bat              PyInstaller 打包
+├─ EvanDFM.spec           打包配置
+├─ pyproject.toml         依赖与打包元数据
+├─ dfm/                   主程序包
+│  ├─ app.py              应用启动 (QApplication / 主题 / 日志 / DPI)
+│  ├─ cli.py              命令行
+│  ├─ paths.py            路径解析 (开发/打包/用户目录)
+│  ├─ branding.py         品牌信息
+│  ├─ core/               issue(问题模型) capability(能力库) rules_config(规则集)
+│  │                      registry(检查注册/插件) source(数据源归一) pipeline(编排)
+│  ├─ checks/             fabrication assembly netlist fabdata fabnet
+│  │                      panelization capability netclass
+│  ├─ io/                 brd_model extracta skill_export fab gerber_model
+│  ├─ report/             writers(Excel/TXT) html svg snapshot __init__(导出门面)
+│  └─ ui/                 main_window state theme icons workers
+│                         pages/(home project analysis results board rules report settings)
+│                         widgets/(common issue_table board_view)
+├─ rules/
+│  ├─ capability/         hongban.yaml sihui.yaml jlcpcb.yaml  ← 板厂制程能力库
+│  └─ checks.yaml         规则集 (开关/阈值/严重度/评分/自定义规则)
+├─ plugins/               检查插件目录 (_sample_check.py 为示例, 默认不加载)
+├─ assets/                图标 (evan.ico / evan.png)
+├─ samples/               示例数据 (brd_export_sample.json / dfm_design_params.json)
+├─ tests/                 单元测试 (python -m unittest discover -s tests)
+└─ docs/                  教程与手册
+   ├─ 01-快速上手.md
+   ├─ 02-用户手册.md
+   ├─ 03-规则库配置指南.md
+   ├─ 04-二次开发指南.md
+   ├─ 05-命令行与自动化.md
+   ├─ 06-常见问题FAQ.md
+   ├─ 07-检查规则清单.md
+   └─ capability-source/  能力库来源 Excel (可追溯)
+```
 
-检测项（均定位到 XY）：
-- 几何 DFM：最小线宽、最小线距（不同网络铜箔）、单边孔环、最小机械孔/激光孔、
-  最大孔、PTH 纵横比、线路到板边、最小阻焊桥、电测/测试点焊盘、Allegro DRC 透传
-- 开短路测试：开路 Open（extracta 用 Allegro 连通性 ratsnest 权威判定；SKILL 用几何
-  连通域派生）、短路 Short（不同网络铜箔接触；extracta 以 Allegro DRC 为准）
-- 网表一致性：逻辑网表 vs 物理连通域；提供 --fab 时再做 CAD vs FAB 网络/节点比对
+## 数据流
 
-说明：extracta 的走线宽度取「网络平均线宽」，故方式A 的间距/短路以焊盘·过孔真实
-尺寸 + Allegro DRC 为准（避免宽电源走线按平均宽膨胀的误报）；方式B（SKILL）逐段
-线宽为实测值，几何间距/短路更细。孔环/孔径/纵横比两种方式的孔径焊盘均为实测值。
+```
+输入                     归一化                        检查                          输出
+────────────────────────────────────────────────────────────────────────────────────────
+.brd ──extracta──┐
+.json (SKILL)  ──┼─→ BrdDesign ─┬─→ fabrication  几何制造 DFM (XY) ─┐
+Gerber/ODB++ ────┘   (统一模型)  ├─→ assembly     装配 / SMT DFM     │
+                      │          ├─→ netlist      开短路 / 网表一致性 ├─→ Issue[]
+设计参数 JSON ─────────┼─→ params ├─→ capability   制程能力比对       │   ↓
+CAD 网表 JSON ─────────┘          ├─→ fabnet       CAD vs FAB        │  规则集改判
+                                  ├─→ panelization 拼板 / 工艺边      │  (阈值/严重度/开关)
+fab_data (渲染几何) ──────────────┴─→ fabdata      制造数据完整性 ────┘   ↓
+                                                              评分 + 汇总 → analysis
+                                                                            ↓
+                                             Excel / HTML / JSON / TXT / SVG + 版图交叉定位
+```
 
-报告（output/brd_dfm_report.xlsx）工作表：Main / Issue summary（含 网络·X位置·Y位置）
-/ Info / 开短路网表 / Issue1..N（逐条定位点）。
-样例数据 samples/brd_export_sample.json 可在无 Allegro 时试跑：
-   `python main.py --brd-dfm samples/brd_export_sample.json`
+## 文档
+
+- [快速上手](docs/01-快速上手.md) — 安装、第一次分析、看懂报告
+- [用户手册](docs/02-用户手册.md) — 界面逐页说明、工作流、检查项含义
+- [规则库配置指南](docs/03-规则库配置指南.md) — 能力库结构、新增板厂、阈值/严重度覆盖、自定义规则、评分模型
+- [二次开发指南](docs/04-二次开发指南.md) — 架构、数据结构、写检查插件、加界面页、扩展报告
+- [命令行与自动化](docs/05-命令行与自动化.md) — 全部命令与参数、CI/MES 集成
+- [常见问题 FAQ](docs/06-常见问题FAQ.md) — extracta、Gerber 无 X2、性能、误报、打包
+- [检查规则清单](docs/07-检查规则清单.md) — 全部规则的判定依据与严重度
+
+## 许可
+
+内部使用。制程能力数据来源于各板厂公开/评估资料，见 `docs/capability-source/`。

@@ -1,58 +1,51 @@
 @echo off
-echo ============================================
-echo  BRD-AI: Building executable...
-echo ============================================
-echo.
+REM ============================================================
+REM  Evan DFM 打包脚本 (PyInstaller)
+REM  用法: build.bat          打包 exe
+REM        build.bat run      打包后直接运行
+REM        build.bat clean    清理构建产物
+REM ============================================================
+setlocal
+cd /d "%~dp0"
 
-REM Check if PyInstaller is installed
-pip show pyinstaller >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Installing PyInstaller...
-    pip install pyinstaller
+if "%1"=="clean" goto :clean
+
+where pyinstaller >nul 2>nul
+if errorlevel 1 (
+  echo [INFO] 未检测到 pyinstaller, 正在安装 ...
+  python -m pip install pyinstaller
+  if errorlevel 1 goto :fail
 )
 
-echo Cleaning old build...
-if exist "build" rmdir /s /q "build"
-if exist "dist"  rmdir /s /q "dist"
+echo [1/3] 清理旧产物 ...
+if exist build rmdir /s /q build
+if exist dist rmdir /s /q dist
+
+echo [2/3] 运行测试 ...
+python -m unittest discover -s tests -t . -q
+if errorlevel 1 (
+  echo [WARN] 测试未全部通过, 仍继续打包 (可用 build.bat 前手动检查^)
+)
+
+echo [3/3] PyInstaller 打包 ...
+pyinstaller EvanDFM.spec --noconfirm --clean
+if errorlevel 1 goto :fail
 
 echo.
-echo Building with PyInstaller...
-python -m PyInstaller --clean --noconfirm ^
-    --name="BRD-AI" ^
-    --windowed ^
-    --add-data="config/checklist_rules.yaml;config" ^
-    --add-data="config/dfm_capability_hongban.yaml;config" ^
-    --add-data="config/dfm_capability_sihui.yaml;config" ^
-    --hidden-import=openpyxl ^
-    --hidden-import=openpyxl.cell ^
-    --hidden-import=openpyxl.styles ^
-    --hidden-import=yaml ^
-    --hidden-import=jinja2 ^
-    --hidden-import=jinja2.ext ^
-    --hidden-import=src.pcb_reader ^
-    --hidden-import=src.signal_classifier ^
-    --hidden-import=src.rule_engine ^
-    --hidden-import=src.dfm_engine ^
-    --hidden-import=src.dfm_rules ^
-    --hidden-import=src.dfm_report ^
-    --hidden-import=src.fab_data_reader ^
-    --hidden-import=src.panelizer ^
-    --hidden-import=src.fab_viewer ^
-    --hidden-import=src.skill_generator ^
-    --hidden-import=src.report_generator ^
-    --hidden-import=src.checklist_reader ^
-    gui.py
+echo ============================================================
+echo  打包完成: dist\EvanDFM.exe
+echo ============================================================
+if "%1"=="run" start "" "dist\EvanDFM.exe"
+goto :eof
 
-if %errorlevel% equ 0 (
-    echo.
-    echo ============================================
-    echo  Build SUCCESS!
-    echo  Output: dist\BRD-AI\BRD-AI.exe
-    echo ============================================
-) else (
-    echo.
-    echo ============================================
-    echo  Build FAILED!
-    echo ============================================
-)
-pause
+:clean
+echo 清理 build / dist ...
+if exist build rmdir /s /q build
+if exist dist rmdir /s /q dist
+for /d /r %%d in (__pycache__) do if exist "%%d" rmdir /s /q "%%d"
+goto :eof
+
+:fail
+echo.
+echo [ERROR] 打包失败, 请检查上面的输出。
+exit /b 1

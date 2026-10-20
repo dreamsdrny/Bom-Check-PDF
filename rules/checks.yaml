@@ -1,0 +1,151 @@
+# ============================================================================
+# Evan DFM 规则集 (checks.yaml)
+# ============================================================================
+# 作用: 在不改代码的前提下定制 DFM 判定标准。
+#
+# 生效位置 (优先级从高到低, 同名覆盖):
+#   1. 环境变量 EVAN_DFM_RULES 指向的目录
+#   2. %APPDATA%\EvanDFM\rules\checks.yaml      ← 用户自定义 (推荐, 升级不丢失)
+#   3. <程序目录>\rules\checks.yaml             ← 本文件 (出厂默认)
+#
+# 修改后: 界面「规则库」页点『重新载入』, 或重跑命令行即可生效。
+# 界面「规则库 → 规则集」页可视化编辑本文件并保存到用户目录。
+#
+# 三层定制能力:
+#   checks         整个检查项的开/关
+#   assembly/panelization/scoring   内置检查的阈值与评分权重
+#   rules          按规则名覆盖严重度/阈值/建议文案 (比板厂能力更严的客户标准)
+#   custom_rules   声明式新增规则 (无需写 Python)
+# ============================================================================
+
+version: 1
+
+# 「接近制程极限」的告警系数: 实测值落在 [阈值, 阈值/系数] 区间时降一级告警。
+# 0.8 表示: 要求 ≥0.10mm 时, 0.10~0.125mm 判为「高」(接近极限), <0.10mm 判「危险」。
+limit_warn_ratio: 0.8
+
+# ---------------- 评分模型 ----------------
+# score = base - min(cap_penalty, Σ(权重 × 该级别问题数))
+scoring:
+  base: 100.0
+  cap_penalty: 100.0
+  weights:
+    危险: 10.0
+    高: 5.0
+    中: 2.0
+    低: 0.5
+    关闭: 0.0
+
+# ---------------- 检查项开关 ----------------
+# id 对应 `python -m dfm checks` 列出的检查 (含插件)。
+checks:
+  fabdata:        { enabled: true }   # 制造数据完整性 (Gerber/ODB++/钻孔)
+  fabrication:    { enabled: true }   # 几何制造 DFM (线宽/线距/孔环/孔径/纵横比/板边/阻焊桥)
+  netlist:        { enabled: true }   # 开短路 + 网表一致性
+  assembly:       { enabled: true }   # 装配 / SMT DFM
+  panelization:   { enabled: true }   # 拼板 / 工艺边 DFM
+  capability:     { enabled: true }   # 制程能力比对 (参数化)
+  fabnet:         { enabled: true }   # CAD vs FAB 网络比对
+  netclass:       { enabled: true }   # 网络分类 / 阻抗需求
+  custom_rules:   { enabled: true }   # 下方 custom_rules 声明式规则
+
+# ---------------- 装配 / SMT 阈值 ----------------
+# 长度单位 mm; 这些是「客户/SMT 厂标准」, 与板厂能力库互补。
+assembly:
+  min_component_spacing: 0.5        # 器件本体最小间距
+  component_to_edge: 2.0            # 器件本体到成型线 (传送/夹持)
+  component_to_edge_severity: 中    # 违规严重度 (可改为 高)
+  pad_to_edge: 0.5                  # SMD 焊盘到成型线
+  fiducial_min: 2                   # 每面全局基准点最少数量
+  fiducial_diameter: 1.0            # 基准点最小直径
+  fiducial_names:                   # 基准点位号识别关键字 (可按客户命名习惯扩展)
+    - FID
+    - MARK
+    - FP
+    - BENCHMARK
+    - 基准
+  test_pad_diameter: 0.8            # 测试点最小直径
+  test_pad_to_edge: 1.27            # 测试点到板边
+  test_coverage_min: 0.0            # 网络测试点覆盖率下限 (0=不检查, 0.7=70%)
+  chip_pad_symmetry_ratio: 0.8      # 两端片式元件焊盘面积对称比 (墓碑效应)
+  bga_pitch_min: 0.4                # 细间距器件引脚间距下限
+  bga_pad_annular: 0.05             # 细间距器件单边孔环下限
+  via_in_pad_allowed: false         # true 时 Via in Pad 只提示不判高危
+  polarity_required: true           # 极性元件需有方向标识
+
+# ---------------- 拼板 / 工艺边阈值 ----------------
+panelization:
+  process_edge: 3.0        # 工艺边最小宽度
+  mark_count: 3            # 每面 Mark 点数量
+  mark_to_edge: 3.5        # Mark 到工艺边距离
+  tooling_hole_count: 2    # 定位孔数量
+  min_utilization: 0.7     # 板材利用率下限 (成本)
+
+# ---------------- 按规则名覆盖 ----------------
+# key = 问题清单中的「规则」列文本 (可用界面『从当前结果导入规则名』批量生成)。
+# 字段:
+#   enabled     false 则该规则完全不报告 (白名单式豁免)
+#   severity    违规时的严重度: 危险/高/中/低/关闭
+#   min         阈值下限 (实测 < min 判违规), 覆盖能力库数值
+#   max         阈值上限 (实测 > max 判违规)
+#   warn_ratio  本规则的「接近极限」系数 (覆盖全局 limit_warn_ratio)
+#   suggestion  覆盖专家建议文案
+#   message     覆盖问题描述
+#
+# 示例 (默认注释掉, 需要时取消注释):
+rules: {}
+#  最小线宽:
+#    enabled: true
+#    severity: 危险
+#    min: 0.1                 # 客户要求 0.10mm, 比板厂能力更严
+#    warn_ratio: 1.1          # 0.10~0.11mm 判「高」(接近极限)
+#    suggestion: 客户强制最小线宽 0.10mm，请加宽线路或与板厂确认能力等级
+#  器件间距:
+#    enabled: true
+#    severity: 高
+#    min: 0.8
+#  最小阻焊桥:
+#    enabled: false           # 该客户不考核阻焊桥
+
+# ---------------- 声明式自定义规则 ----------------
+# 对「设计参数」做比较即可新增规则, 无需写代码。
+# 参数名来源: 界面「数据源 → 解析预览」列出的量测参数, 或设计参数 JSON 的键。
+# 常用参数: min_line_width / min_spacing / min_mech_drill / min_annular_ring /
+#           board_thickness / layer_count / via_count / pth_count / comp_count /
+#           smd_count / pin_count / fiducial_count_top / fiducial_count_bottom /
+#           test_pad_diameter / min_component_spacing / component_to_edge /
+#           surface_finish / impedance / panelized / process_edge_mm ...
+# 运算符 op:
+#   ge le gt lt eq ne          数值比较 (实测值需满足 op 目标值, 否则报问题)
+#   between outside            区间 [lo, hi] 内 / 外
+#   in not_in                  属于 / 不属于列表
+#   missing                    参数缺失即报问题
+#   true false                 布尔判定
+custom_rules: []
+#  - id: CUS-01
+#    name: 板厚必须为 1.6mm
+#    category: 板厚
+#    param: board_thickness
+#    op: eq
+#    value: 1.6
+#    severity: 高
+#    unit: mm
+#    message: 板厚 {value}mm 不符合客户标准 1.6mm
+#    suggestion: 修改叠层板厚为 1.6mm
+#  - id: CUS-02
+#    name: 表面处理必须为 ENIG
+#    category: 表面处理
+#    param: surface_finish
+#    op: in
+#    value: [ENIG, ENEPIG]
+#    severity: 高
+#    message: 表面处理 {value} 不在客户允许清单内
+#    suggestion: 改用 ENIG 或 ENEPIG
+#  - id: CUS-03
+#    name: 必须声明阻抗控制
+#    category: 线路
+#    param: impedance
+#    op: true
+#    severity: 中
+#    message: 未声明阻抗控制要求
+#    suggestion: 在叠层中明确阻抗值与公差, 并在 Gerber 中标注阻抗条
