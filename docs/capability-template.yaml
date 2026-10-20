@@ -1,0 +1,176 @@
+# ============================================================================
+# 板厂制程能力库模板 (Capability Template)
+# ============================================================================
+# 用法:
+#   1. 复制本文件到  %APPDATA%\EvanDFM\rules\capability\<板厂id>.yaml
+#      (文件名即板厂 id, 建议用小写英文, 如 myfab.yaml)
+#   2. 按板厂评估表填写数值; **不确定的项直接删掉**, 缺项会被跳过并在报告中标为
+#      「该等级无制程数据, 需与板厂评估」, 不会误判
+#   3. 界面「规则库 → 板厂能力库」点『重新加载』, 或重跑命令行
+#
+# 单位约定: 每个数值项写成 {value: 数值, unit: mm|um|mil|percent|ratio, note: "说明"}
+#           程序内部统一换算为 mm
+# 提示: 不要把板厂评估表原件提交到公开仓库, 只在 meta.source_files 记录文件名
+# ============================================================================
+
+meta:
+  factory: "示例板厂"                       # 界面显示名
+  aliases: ["示例板厂", "板厂A", "myfab"]    # 别名, 命令行 --factory 可用中文
+  revision: "2026-10"                      # 能力库版本 (报告可追溯)
+  source_files: ["硬板-制程能力评估表.xlsx"]  # 仅记录来源文件名, 不放原件
+  unit_note: "mil->mm 换算 1mil=0.0254mm; 铜厚表中 T 为成品铜厚(um)"
+
+board_types:
+
+  # ==========================================================================
+  # 硬板
+  # ==========================================================================
+  rigid:
+    label: "硬板"
+    levels: [standard, extreme]            # 可自定义, 如 [standard, automotive, extreme]
+    level_labels:
+      standard: "常规"
+      extreme: "极限"
+
+    # ---------------- 常规等级 ----------------
+    standard:
+      panel:
+        max_working_panel:  { value: [600, 500], unit: mm, note: "最大工作板尺寸" }
+        min_breakaway_rail: { value: 4, unit: mm, note: "最小工艺边" }
+
+      trace:
+        # 最小线宽/线距按成品铜厚分档 (um)
+        min_line_spacing_by_copper:
+          - { copper_max_um: 35,                     line_um: 100, space_um: 100 }
+          - { copper_min_um: 35, copper_max_um: 70,  line_um: 150, space_um: 150 }
+          - { copper_min_um: 70, copper_max_um: 105, line_um: 200, space_um: 200 }
+        # 线宽公差 (写进报告 Info 页)
+        line_width_tolerance:
+          - { width_min_um: 50,  width_max_um: 100, tol_um: 20 }
+          - { width_min_um: 100, width_max_um: 200, tol_pct: 20 }
+        hole_to_hole_spacing:                 # 不同网络孔壁间距 (CAF 风险)
+          pth_to_pth:    { value: 0.30, unit: mm }
+          pth_to_blind:  { value: 0.30, unit: mm }
+          blind_to_blind:{ value: 0.25, unit: mm }
+        trace_to_board_edge: { inner: 0.30, outer: 0.25, unit: mm }
+        aoi_min_detect:      { value: 50, unit: um, note: "AOI 最小可检测" }
+
+      lamination:
+        board_thickness: { min_mm: 0.4, max_mm: 3.2, note: "支持板厚范围" }
+        layer_registration: { value: 3, unit: mil, note: "层间对位精度" }
+
+      drill:
+        min_mech_drill:  { value: 0.20, unit: mm }
+        max_mech_drill:  { value: 6.30, unit: mm }
+        min_laser_via:   { value: 100,  unit: um, note: "激光孔最小孔径" }
+        annular_ring_mech:  { value: 0.15, unit: mm, note: "机械孔单边孔环" }
+        annular_ring_laser: { value: 0.10, unit: mm, note: "激光孔单边孔环" }
+        npth_to_edge:       { value: 0.50, unit: mm, note: "NPTH 孔壁到板边" }
+        hole_wall_roughness:{ value: 30,   unit: um }
+        # 激光孔介质厚度上限 (按孔径分档)
+        laser_dielectric_limit:
+          - { hole_um: 100, dielectric_max_um: 80 }
+          - { hole_um: 150, dielectric_max_um: 120 }
+
+      plating:
+        pth_aspect_ratio:      { value: 10, unit: ratio, note: "板厚/孔径 上限" }
+        blind_via_fill_aspect: { value: 0.8, unit: ratio }
+        plating_uniformity:    { value: 12, unit: um }
+
+      plug_hole:
+        resin_plug_min:   { hole_mm: 0.20, board_thickness_mm: 1.0, note: "树脂塞孔适用条件" }
+        resin_plug_depth: { value: 80, unit: percent }
+        ink_plug_depth:   { value: 70, unit: percent }
+        plug_aspect_ratio:{ value: 12, unit: ratio }
+
+      solder_mask:
+        # 阻焊桥按铜厚分档 (oz); 若与铜厚无关改用 min_bridge_single
+        min_bridge_by_copper:
+          - { copper_oz: 1, value: 0.10, unit: mm }
+          - { copper_oz: 2, value: 0.20, unit: mm }
+        min_opening: { value: 0.10, unit: mm, note: "阻焊开窗最小尺寸" }
+        ink_thickness_by_copper:
+          - { copper_oz: 1, min_um: 10, max_um: 25 }
+
+      silkscreen:
+        min_line_width:    { value: 0.15, unit: mm }
+        min_clearance:     { value: 0.15, unit: mm }
+        min_char_size:     { width_mil: 40, height_mil: 60 }
+        min_to_solder_mask:{ value: 0.10, unit: mm }
+        min_to_outline:    { value: 0.50, unit: mm }
+
+      surface_finish:                     # 键即支持的表面处理工艺
+        HASL:   { note: "有铅/无铅喷锡" }
+        ENIG:   { note: "沉金" }
+        OSP:    { note: "抗氧化" }
+
+      test:
+        min_pad_2wire: { value: 0.40, unit: mm, note: "电测 PAD (二线)" }
+        min_pad_4wire: { value: [0.40, 0.60], unit: mm }
+
+    # ---------------- 极限等级 ----------------
+    extreme:
+      panel:
+        max_working_panel:  { value: [500, 400], unit: mm }
+        min_breakaway_rail: { value: 3, unit: mm }
+      trace:
+        min_line_spacing_by_copper:
+          - { copper_max_um: 35,                    line_um: 60, space_um: 60 }
+          - { copper_min_um: 35, copper_max_um: 70, line_um: 100, space_um: 100 }
+        trace_to_board_edge: { inner: 0.25, outer: 0.20, unit: mm }
+      lamination:
+        board_thickness: { min_mm: 0.2, max_mm: 2.4 }
+      drill:
+        min_mech_drill:    { value: 0.15, unit: mm }
+        min_laser_via:     { value: 75, unit: um }
+        annular_ring_mech: { value: 0.10, unit: mm }
+        npth_to_edge:      { value: 0.40, unit: mm }
+      plating:
+        pth_aspect_ratio: { value: 14, unit: ratio }
+      solder_mask:
+        min_bridge_single: { value: 0.075, unit: mm }
+        min_opening:       { value: 0.08, unit: mm }
+      silkscreen:
+        min_line_width: { value: 0.12, unit: mm }
+        min_clearance:  { value: 0.12, unit: mm }
+      surface_finish:
+        ENIG: { note: "沉金" }
+      test:
+        min_pad_2wire: { value: 0.25, unit: mm }
+
+  # ==========================================================================
+  # 软板 / 软硬结合板 (不需要可整段删除)
+  # ==========================================================================
+  flex:
+    label: "软板及软硬结合板"
+    levels: [standard]
+    level_labels:
+      standard: "常规"
+    standard:
+      trace:
+        min_line_spacing_by_copper:
+          - { copper_max_um: 18, line_um: 50, space_um: 50 }
+          - { copper_min_um: 18, copper_max_um: 35, line_um: 80, space_um: 80 }
+        trace_to_board_edge: { inner: 0.30, outer: 0.25, unit: mm }
+      lamination:
+        board_thickness: { min_mm: 0.1, max_mm: 2.0 }
+      drill:
+        min_mech_drill:  { value: 0.20, unit: mm }
+        min_laser_via:   { value: 100, unit: um }
+        annular_ring_mech: { value: 0.13, unit: mm }
+      coverlay:                              # 软板专有: 覆盖膜
+        min_window_spacing: { value: 0.50, unit: mm }
+        window_to_pad:      { value: 0.30, unit: mm }
+        window_to_trace:    { value: 0.15, unit: mm }
+        min_window_rect:    { value: [0.60, 0.60], unit: mm }
+      routing:                               # 软板专有: 锣型
+        min_router_width:   { value: 0.30, unit: mm }
+      stiffener:                             # 软板专有: 补强板
+        min_thickness:      { value: 0.20, unit: mm }
+      solder_mask:
+        min_bridge_single: { value: 0.10, unit: mm }
+      surface_finish:
+        ENIG: { note: "沉金" }
+        OSP:  { note: "抗氧化" }
+      test:
+        min_pad_2wire: { value: 0.30, unit: mm }

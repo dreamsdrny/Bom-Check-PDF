@@ -2,11 +2,11 @@
   "format": "brd-dfm-export",
   "version": "1.0",
   "tool": "Cadence Allegro PCB Editor",
-  "source": "DEMO-2L_SAMPLE",
+  "source": "DEMO-2L-SAMPLE",
   "units": "mm",
   "source_units": "millimeter",
   "board": {
-    "name": "DEMO-2L_SAMPLE",
+    "name": "DEMO-2L-SAMPLE",
     "revision": "A",
     "thickness_mm": 1.6,
     "layer_count": 2

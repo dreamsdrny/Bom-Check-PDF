@@ -230,7 +230,7 @@ class MainWindow(QMainWindow):
         self.factory_box.clear()
         for fid in list_factories():
             self.factory_box.addItem(labels.get(fid, fid), fid)
-        i = self.factory_box.findData(cfg.get("factory") or current or "hongban")
+        i = self.factory_box.findData(cfg.get("factory") or current or "jlcpcb")
         self.factory_box.setCurrentIndex(max(0, i))
         self.factory_box.blockSignals(False)
 
@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_levels(self) -> None:
         cfg = self.state.config
-        fid = self.factory_box.currentData() or cfg.get("factory") or "hongban"
+        fid = self.factory_box.currentData() or cfg.get("factory") or "jlcpcb"
         bt = cfg.get("board_type") or "rigid"
         levels = list_levels(bt, factory=fid) or ["standard"]
         self.level_box.blockSignals(True)

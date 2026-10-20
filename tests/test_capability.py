@@ -14,29 +14,30 @@ from dfm.core import capability as cap
 class TestDiscovery(unittest.TestCase):
     def test_builtin_factories(self):
         ids = cap.list_factories()
-        self.assertIn("hongban", ids)
-        self.assertIn("sihui", ids)
-        self.assertIn("jlcpcb", ids)
+        self.assertIn("jlcpcb", ids)                 # 随包示例能力库 (公开数据)
         self.assertEqual(ids[0], cap.DEFAULT_FACTORY)
+        for fid in ids:
+            self.assertTrue(os.path.isfile(cap.capability_file(fid)))
 
     def test_labels_and_aliases(self):
         labels = cap.factory_labels()
-        self.assertTrue(labels["hongban"])
-        self.assertEqual(cap.normalize_factory("板厂A"), "hongban")
+        self.assertTrue(labels["jlcpcb"])
         self.assertEqual(cap.normalize_factory("嘉立创"), "jlcpcb")
-        self.assertEqual(cap.normalize_factory("SIHUI"), "sihui")
+        self.assertEqual(cap.normalize_factory("立创"), "jlcpcb")
+        self.assertEqual(cap.normalize_factory("JLC"), "jlcpcb")
+        self.assertEqual(cap.normalize_factory("JLCPCB"), "jlcpcb")
         self.assertEqual(cap.normalize_factory("不存在的板厂"), cap.DEFAULT_FACTORY)
-        self.assertEqual(cap.factory_label("hongban"), labels["hongban"])
+        self.assertEqual(cap.factory_label("jlcpcb"), labels["jlcpcb"])
 
     def test_capability_file_path(self):
-        path = cap.capability_file("sihui")
+        path = cap.capability_file("jlcpcb")
         self.assertTrue(path and os.path.isfile(path))
         self.assertTrue(path.endswith(".yaml"))
 
     def test_levels_and_board_types(self):
-        types = cap.list_board_types("hongban")
+        types = cap.list_board_types("jlcpcb")
         self.assertIn("rigid", types)
-        levels = cap.list_levels("rigid", factory="hongban")
+        levels = cap.list_levels("rigid", factory="jlcpcb")
         self.assertIn("standard", levels)
         self.assertEqual(cap.normalize_level("advanced"), "extreme")
         self.assertEqual(cap.normalize_level("车规"), "automotive")
@@ -86,7 +87,7 @@ class TestDiscovery(unittest.TestCase):
 class TestCapabilityValues(unittest.TestCase):
     def setUp(self):
         cap.clear_capability_cache()
-        self.c = cap.load_capability("rigid", "standard", factory="hongban")
+        self.c = cap.load_capability("rigid", "standard", factory="jlcpcb")
 
     def test_line_spacing_by_copper(self):
         thin = cap.get_line_spacing_capability(self.c, 18.0)
@@ -105,7 +106,7 @@ class TestCapabilityValues(unittest.TestCase):
         result = cap.analyze_design(
             {"min_line_width": 0.05, "min_spacing": 0.05, "min_mech_drill": 0.15,
              "board_thickness": 1.6, "copper_um": 35},
-            board_type="rigid", capability_level="standard", factory="hongban")
+            board_type="rigid", capability_level="standard", factory="jlcpcb")
         self.assertFalse(result["passed"])
         self.assertTrue(result["issues"])
         fails = {it["item"] for it in result["items"] if it["status"] == "fail"}
@@ -115,11 +116,11 @@ class TestCapabilityValues(unittest.TestCase):
         result = cap.analyze_design(
             {"min_line_width": 0.25, "min_spacing": 0.25, "min_mech_drill": 0.3,
              "board_thickness": 1.6, "copper_um": 35},
-            board_type="rigid", capability_level="standard", factory="hongban")
+            board_type="rigid", capability_level="standard", factory="jlcpcb")
         self.assertTrue(result["passed"])
 
     def test_empty_params_no_issues(self):
-        result = cap.analyze_design({}, factory="hongban")
+        result = cap.analyze_design({}, factory="jlcpcb")
         self.assertEqual(result["items"], [])
         self.assertTrue(result["passed"])
 

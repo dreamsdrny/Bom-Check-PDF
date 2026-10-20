@@ -19,7 +19,7 @@ class ReportTestBase(unittest.TestCase):
     def setUpClass(cls):
         cls.res = analyze({
             "source_type": "json", "source_path": SAMPLE_JSON,
-            "design_params": SAMPLE_PARAMS, "factory": "hongban",
+            "design_params": SAMPLE_PARAMS, "factory": "jlcpcb",
             "board_type": "rigid", "capability_level": "standard",
             "copper_um": 35.0, "board_thickness": 1.6, "load_plugins": False,
         })
@@ -60,7 +60,7 @@ class TestText(ReportTestBase):
         path = os.path.join(self.tmp, "r.txt")
         generate_dfm_text(self.res, path, self.res["board_meta"])
         text = open(path, "r", encoding="utf-8").read()
-        self.assertIn("DEMO-2L_SAMPLE", text)
+        self.assertIn("DEMO-2L-SAMPLE", text)
         self.assertIn("可制造性评分", text)
         self.assertGreater(len(text), 500)
 
@@ -73,7 +73,7 @@ class TestHtml(ReportTestBase):
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("dfm-data", html)
         self.assertIn("issue-row", html)
-        self.assertIn("DEMO-2L_SAMPLE", html)
+        self.assertIn("DEMO-2L-SAMPLE", html)
         self.assertGreater(len(html), 8000)
 
     def test_svg_embedded(self):

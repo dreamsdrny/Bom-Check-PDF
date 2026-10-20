@@ -2,7 +2,7 @@
 # Evan DFM: PCB 制程能力数据库 - JLCPCB (嘉立创)
 # 来源: JLCPCB 官方 "Rigid PCB Manufacturing Capabilities" 公开能力表
 # 单位约定: 每项均带 unit 字段 (mm/um/mil/percent/ratio)
-# 说明: 与 hongban.yaml / sihui.yaml 结构一致, 可直接被
+# 说明: 与 jlcpcb.yaml / jlcpcb.yaml 结构一致, 可直接被
 #       dfm.core.capability 加载 (factory = jlcpcb)
 # ============================================================
 

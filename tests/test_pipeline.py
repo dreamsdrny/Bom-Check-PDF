@@ -15,7 +15,7 @@ def base_cfg(**over):
     cfg = {
         "source_type": "json",
         "source_path": SAMPLE_JSON,
-        "factory": "hongban",
+        "factory": "jlcpcb",
         "board_type": "rigid",
         "capability_level": "standard",
         "copper_um": 35.0,
@@ -81,8 +81,8 @@ class TestAnalyzeJson(unittest.TestCase):
 
     def test_board_meta(self):
         meta = self.res["board_meta"]
-        self.assertEqual(meta["board_name"], "DEMO-2L_SAMPLE")
-        self.assertIn("板厂A", meta["rule_set"])
+        self.assertEqual(meta["board_name"], "DEMO-2L-SAMPLE")
+        self.assertIn("JLCPCB", meta["rule_set"])
         self.assertTrue(meta["finish_time"])
 
     def test_design_params_exposed(self):
@@ -103,7 +103,7 @@ class TestModuleSelection(unittest.TestCase):
     def test_params_only_source(self):
         res = analyze({
             "source_type": "params", "source_path": "",
-            "design_params": SAMPLE_PARAMS, "factory": "hongban",
+            "design_params": SAMPLE_PARAMS, "factory": "jlcpcb",
             "board_type": "rigid", "capability_level": "standard",
             "load_plugins": False,
         })
@@ -185,7 +185,7 @@ class TestGerberSource(unittest.TestCase):
     def test_analyze_gerber_dir(self):
         res = analyze({
             "source_type": "gerber", "source_path": self.tmp, "fab_path": self.tmp,
-            "factory": "hongban", "board_type": "rigid", "capability_level": "standard",
+            "factory": "jlcpcb", "board_type": "rigid", "capability_level": "standard",
             "copper_um": 35.0, "board_thickness": 1.6, "load_plugins": False,
         })
         self.assertIn("fabdata", res["checks_run"])
@@ -194,11 +194,11 @@ class TestGerberSource(unittest.TestCase):
         self.assertIn("gerber_meta", res)
 
     def test_analyze_file_helper(self):
-        res = analyze_file(SAMPLE_JSON, factory="sihui", board_type="rigid",
+        res = analyze_file(SAMPLE_JSON, factory="jlcpcb", board_type="rigid",
                            capability_level="standard", modules=["fabrication"],
                            rules_path=None)
         self.assertEqual(res["source"]["type"], "json")
-        self.assertIn("板厂B", res["factory_label"])
+        self.assertIn("JLCPCB", res["factory_label"])
 
 
 class TestCadNets(unittest.TestCase):

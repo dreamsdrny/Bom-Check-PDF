@@ -34,7 +34,7 @@ from dfm import paths
 
 MIL_TO_MM = 0.0254
 
-DEFAULT_FACTORY = "hongban"
+DEFAULT_FACTORY = "jlcpcb"
 
 LEVEL_ALIASES = {
     "advanced": "extreme",      # 旧级别兼容

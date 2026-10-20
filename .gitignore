@@ -15,6 +15,20 @@ output/
 reports/
 *.dfmproj
 
+# 敏感资料: 供应商评估表 / 客户板数据 / 真实网表 —— 严禁提交
+Pcb-manufacture/
+docs/capability-source/
+*制程能力*.xls*
+*评估*.xls*
+*能力*评估*
+*.brd
+*.mcm
+*.sip
+cad_nets*.json
+brd_export.json
+real_*.json
+*_filled.xlsx
+
 # 虚拟环境
 .venv/
 venv/

@@ -4,7 +4,7 @@
 
     from dfm import analyze, analyze_file, export_report, list_factories
 
-    result = analyze_file("board.brd", factory="hongban", board_type="rigid")
+    result = analyze_file("board.brd", factory="jlcpcb", board_type="rigid")
     export_report(result, "report.xlsx")
 
 分层结构::

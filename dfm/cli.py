@@ -4,7 +4,7 @@
 
     python -m dfm gui                                   # 启动桌面界面
     python -m dfm analyze board.brd -o out --format excel,html
-    python -m dfm analyze gerber_dir --factory 板厂B --level automotive --thickness 1.6
+    python -m dfm analyze gerber_dir --factory jlcpcb --level extreme --thickness 1.6
     python -m dfm info board.json                       # 只看解析结果与统计
     python -m dfm rules list|show|template|path         # 规则库管理
     python -m dfm checks                                # 列出全部检查项(含插件)
@@ -326,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
 示例:
   python -m dfm gui
   python -m dfm analyze D:/board.brd -o D:/out --format excel,html
-  python -m dfm analyze D:/gerber --factory 板厂B --level extreme --thickness 1.6
+  python -m dfm analyze D:/gerber --factory 嘉立创 --level extreme --thickness 1.6
   python -m dfm analyze params.json --type params --modules capability,panelization
   python -m dfm info D:/board.json
   python -m dfm rules list
@@ -345,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--fab", default=None, help="附加制造数据 (Gerber/ODB++/Drill)")
     a.add_argument("--cad-nets", dest="cad_nets", default=None, help="CAD 网表 JSON")
     a.add_argument("--params", default=None, help="设计参数 JSON (制程能力比对)")
-    a.add_argument("--factory", default="hongban", help="板厂 id / 中文名 / 别名")
+    a.add_argument("--factory", default="jlcpcb", help="板厂 id / 中文名 / 别名")
     a.add_argument("--board-type", dest="board_type", default="rigid", help="rigid|flex")
     a.add_argument("--level", default="standard", help="能力等级 standard|automotive|extreme")
     a.add_argument("--copper-um", dest="copper_um", type=float, default=35.0, help="成品铜厚 um")
@@ -379,7 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("rules", help="规则库管理")
     r.add_argument("action", choices=["list", "show", "template", "path", "capability"])
     r.add_argument("--file", default=None, help="规则集 YAML 路径")
-    r.add_argument("--factory", default="hongban", help="capability 动作: 板厂")
+    r.add_argument("--factory", default="jlcpcb", help="capability 动作: 板厂")
     r.add_argument("--out", default=None, help="template 动作: 输出路径")
     r.add_argument("--open", action="store_true", help="capability 动作: 用默认程序打开")
     r.set_defaults(func=cmd_rules)

@@ -32,7 +32,7 @@ class TestLoadJsonSource(unittest.TestCase):
         src = load_source({"source_path": SAMPLE_JSON})
         self.assertEqual(src.kind, SOURCE_JSON)
         self.assertTrue(src.has_design)
-        self.assertEqual(src.board_name, "DEMO-2L_SAMPLE")
+        self.assertEqual(src.board_name, "DEMO-2L-SAMPLE")
         self.assertEqual(src.board_meta["version"], "A")
         self.assertTrue(src.fab_data)                 # to_fab_data 结果供渲染
         self.assertEqual(src.info_stats["manufacturing"]["铜层数"], 2)

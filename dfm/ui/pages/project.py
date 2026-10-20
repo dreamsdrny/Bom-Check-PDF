@@ -394,7 +394,7 @@ class ProjectPage(BasePage):
             fab_path=self.fab_row.text(),
             cad_nets=self.cad_row.text(),
             design_params=self.params_row.text(),
-            factory=self.factory_box.currentData() or "hongban",
+            factory=self.factory_box.currentData() or "jlcpcb",
             board_type=self.type_board_box.currentData() or "rigid",
             capability_level=self.level_box.currentData() or "standard",
             copper_um=self.copper_um.value(),
@@ -408,7 +408,7 @@ class ProjectPage(BasePage):
 
     def _refresh_rules_label(self) -> None:
         rules = self.state.rules
-        cap = capability_file(self.state.config.get("factory") or "hongban") or ""
+        cap = capability_file(self.state.config.get("factory") or "jlcpcb") or ""
         d = rules.describe()
         self.rules_label.setText(
             f"能力库: {os.path.basename(cap) or '(未找到)'}   规则集: "
@@ -434,7 +434,7 @@ class ProjectPage(BasePage):
         self._refresh_rules_label()
 
     def _reload_factories(self) -> None:
-        current = self.state.config.get("factory") or "hongban"
+        current = self.state.config.get("factory") or "jlcpcb"
         labels = factory_labels()
         self.factory_box.blockSignals(True)
         self.factory_box.clear()
@@ -453,7 +453,7 @@ class ProjectPage(BasePage):
         self._on_change()
 
     def _reload_levels(self) -> None:
-        fid = self.factory_box.currentData() or "hongban"
+        fid = self.factory_box.currentData() or "jlcpcb"
         bt = self.type_board_box.currentData() or "rigid"
         current = self.state.config.get("capability_level") or "standard"
         levels = list_levels(bt, factory=fid) or ["standard"]

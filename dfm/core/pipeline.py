@@ -9,7 +9,7 @@
 用法::
 
     from dfm import analyze_file
-    result = analyze_file("D:/board.brd", factory="板厂B", board_type="rigid",
+    result = analyze_file("D:/board.brd", factory="嘉立创", board_type="rigid",
                           capability_level="standard", copper_um=35)
     print(result["risk"]["score"], result["issue_summary"])
 
@@ -113,7 +113,7 @@ def analyze(cfg: Dict[str, Any],
                                      load_capability_db, normalize_factory,
                                      normalize_level)
 
-    factory = normalize_factory(cfg.get("factory") or "hongban")
+    factory = normalize_factory(cfg.get("factory") or "jlcpcb")
     board_type = str(cfg.get("board_type") or "rigid")
     level = normalize_level(cfg.get("capability_level") or "standard")
     copper_um = float(cfg.get("copper_um") or 35.0)
@@ -276,7 +276,7 @@ def analyze(cfg: Dict[str, Any],
     return result
 
 
-def analyze_file(path: str, factory: str = "hongban", board_type: str = "rigid",
+def analyze_file(path: str, factory: str = "jlcpcb", board_type: str = "rigid",
                  capability_level: str = "standard", copper_um: float = 35.0,
                  copper_oz: Optional[float] = None,
                  board_thickness: Optional[float] = None,

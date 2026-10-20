@@ -144,7 +144,7 @@ class HomePage(BasePage):
         cfg = self.state.config
         from dfm.core.capability import factory_label
 
-        info = [("板厂", factory_label(cfg.get("factory") or "hongban")),
+        info = [("板厂", factory_label(cfg.get("factory") or "jlcpcb")),
                 ("板型", "硬板" if cfg.get("board_type") == "rigid" else "软板"),
                 ("等级", str(cfg.get("capability_level") or "standard")),
                 ("铜厚", f"{cfg.get('copper_um') or 35}um")]

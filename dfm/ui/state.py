@@ -21,7 +21,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "fab_path": "",
     "cad_nets": "",
     "design_params": "",
-    "factory": "hongban",
+    "factory": "jlcpcb",
     "board_type": "rigid",
     "capability_level": "standard",
     "copper_um": 35.0,

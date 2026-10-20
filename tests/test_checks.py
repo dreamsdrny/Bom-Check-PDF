@@ -14,7 +14,7 @@ from dfm.core.capability import load_capability
 
 
 def capability():
-    return load_capability("rigid", "standard", factory="hongban")
+    return load_capability("rigid", "standard", factory="jlcpcb")
 
 
 class TestFabricationGeometry(unittest.TestCase):
@@ -53,19 +53,19 @@ class TestFabricationGeometry(unittest.TestCase):
             self.assertTrue(it["suggestion"])
 
     def test_clean_board_has_no_geometry_issues(self):
+        """把样例板改到全面满足能力后, 线宽/孔径/孔环类问题应消失。"""
         raw = make_raw()
         for cl in raw["clines"]:
-            cl["width"] = max(cl["width"], 0.25)
+            cl["width"] = max(cl["width"], 0.30)
         for v in raw["vias"]:
             v["drill_mm"] = 0.35
-            v["pad_mm"] = 0.75
+            v["pad_mm"] = 0.95          # 单边孔环 0.30mm, 远离能力极限
         raw["drc"] = []
         raw["pads"] = [p for p in raw["pads"] if p["refdes"] != "C1"]
         d = design(**raw)
-        issues = [it for it in analyze_geometry(d, capability(), 35.0, 1.0, "rigid")
-                  if it["rule"] not in ("最小阻焊桥",)]
+        issues = analyze_geometry(d, capability(), 35.0, 1.0, "rigid")
         narrow = [it for it in issues if it["rule"] in ("最小线宽", "最小机械钻孔",
-                                                        "单边孔环(机械孔)")]
+                                                        "单边孔环(机械孔)", "PTH纵横比")]
         self.assertEqual(narrow, [])
 
 

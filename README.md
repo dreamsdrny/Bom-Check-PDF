@@ -47,7 +47,7 @@ build.bat            :: 产物 dist\EvanDFM.exe
 python -m dfm analyze samples\brd_export_sample.json -o out --format excel,html
 
 :: 分析 Gerber 目录 (指定板厚才能判纵横比)
-python -m dfm analyze D:\gerber_dir --factory 板厂B --level automotive --thickness 1.6 -o out
+python -m dfm analyze D:\gerber_dir --factory jlcpcb --level extreme --thickness 1.6 -o out
 
 :: 只看解析结果与自动量测参数
 python -m dfm info D:\board.json
@@ -83,7 +83,7 @@ DFM-AI/
 │                         pages/(home project analysis results board rules report settings)
 │                         widgets/(common issue_table board_view)
 ├─ rules/
-│  ├─ capability/         hongban.yaml sihui.yaml jlcpcb.yaml  ← 板厂制程能力库
+│  ├─ capability/         jlcpcb.yaml (示例, 取自公开能力表) ← 板厂制程能力库
 │  └─ checks.yaml         规则集 (开关/阈值/严重度/评分/自定义规则)
 ├─ plugins/               检查插件目录 (_sample_check.py 为示例, 默认不加载)
 ├─ assets/                图标 (evan.ico / evan.png)
@@ -97,7 +97,7 @@ DFM-AI/
    ├─ 05-命令行与自动化.md
    ├─ 06-常见问题FAQ.md
    ├─ 07-检查规则清单.md
-   └─ capability-source/  能力库来源 Excel (可追溯)
+   └─ capability-template.yaml  新增板厂能力库模板
 ```
 
 ## 数据流
@@ -130,4 +130,8 @@ fab_data (渲染几何) ──────────────┴─→ fabd
 
 ## 许可
 
-内部使用。制程能力数据来源于各板厂公开/评估资料，见 `docs/capability-source/`。
+Apache License 2.0，见 [LICENSE](LICENSE)。
+
+随包提供的示例能力库 `rules/capability/jlcpcb.yaml` 数据取自 JLCPCB **公开**能力表；
+你自己板厂的能力库请放在 `%APPDATA%\EvanDFM\rules\capability\`（用户目录，不入版本库），
+避免把供应商评估资料提交到公开仓库。
