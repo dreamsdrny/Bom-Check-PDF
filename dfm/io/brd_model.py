@@ -11,7 +11,6 @@ BrdDesign 数据结构, 供:
 """
 import json
 import math
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 MM_TOL = 1e-4
@@ -89,12 +88,16 @@ class BrdDesign:
         self.clines: List[dict] = []
         for cl in self.raw.get("clines", []) or []:
             pts = _pts(cl.get("points"))
-            self.clines.append({
+            rec = {
                 "net": str(cl.get("net", "") or ""),
                 "layer": str(cl.get("layer", "") or ""),
                 "width": _num(cl.get("width")),
                 "points": pts,
-            })
+                "polarity": str(cl.get("polarity", "") or "dark"),
+            }
+            if cl.get("arc"):
+                rec["arc"] = dict(cl["arc"])
+            self.clines.append(rec)
 
         self.vias: List[dict] = []
         for v in self.raw.get("vias", []) or []:
@@ -107,6 +110,9 @@ class BrdDesign:
                 "start_layer": str(v.get("start_layer", "") or ""),
                 "end_layer": str(v.get("end_layer", "") or ""),
                 "type": str(v.get("type", "") or "through"),
+                "is_slot": bool(v.get("is_slot")),
+                "x2": _num(v.get("x2")), "y2": _num(v.get("y2")),
+                "slot_length_mm": _num(v.get("slot_length_mm")),
             })
 
         self.pads: List[dict] = []
@@ -121,6 +127,12 @@ class BrdDesign:
                 "is_smd": bool(p.get("is_smd")),
                 "pad_w": _num(p.get("pad_w")), "pad_h": _num(p.get("pad_h")),
                 "drill_mm": _num(p.get("drill_mm")),
+                "pad_shape": str(p.get("pad_shape", "") or ""),
+                "pad_rot": _num(p.get("pad_rot")) or 0.0,
+                "hole_mm": _num(p.get("hole_mm")),
+                "polarity": str(p.get("polarity", "") or "dark"),
+                "points": _pts(p.get("points")) or None,
+                "is_testpoint": bool(p.get("is_testpoint")),
             })
 
         self.shapes: List[dict] = []
@@ -131,6 +143,9 @@ class BrdDesign:
                 "net": str(s.get("net", "") or ""),
                 "layer": str(s.get("layer", "") or ""),
                 "bbox": bb,
+                "points": _pts(s.get("points")) or None,
+                "holes": [_pts(h) for h in (s.get("holes") or []) if _pts(h)],
+                "polarity": str(s.get("polarity", "") or "dark"),
             })
 
         self.testpoints: List[dict] = []
@@ -168,6 +183,9 @@ class BrdDesign:
             })
         self.net_avg_width_mm: Dict[str, float] = self.raw.get("net_avg_width_mm", {}) or {}
         self.etch_width_is_average: bool = bool(self.raw.get("etch_width_is_average", False))
+        #: 解析阶段产生的提示 (宏光圈未展开/负片层/槽孔近似/阵列展开等)
+        self.parse_notes: List[str] = [str(n) for n in
+                                       (self.raw.get("parse_notes") or []) if n]
 
         self.bbox = self._compute_bbox()
         self._layers = None
@@ -240,7 +258,7 @@ class BrdDesign:
 
 def load_brd_export(path: str) -> BrdDesign:
     """读取 SKILL 导出的 JSON -> BrdDesign"""
-    with open(path, "r", encoding="utf-8-sig") as f:
+    with open(path, encoding="utf-8-sig") as f:
         raw = json.load(f)
     return BrdDesign(raw, source_path=path)
 
@@ -396,25 +414,48 @@ def to_fab_data(design: BrdDesign) -> List[dict]:
                 "type": "draw", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                 "layer": cl["layer"] or "COPPER", "net": cl["net"],
                 "width": cl["width"],
+                "clear": cl.get("polarity") == "clear",
             })
     for p in design.pads:
         if p["x"] is None:
             continue
         w = p["pad_w"] or p["pad_h"] or 0.3
-        features.append({
+        h = p["pad_h"] or w
+        prim = {
             "type": "flash", "x1": p["x"], "y1": p["y"], "x2": p["x"], "y2": p["y"],
-            "layer": p["layer"] or "COPPER", "net": p["net"], "width": w,
+            "layer": p["layer"] or "COPPER", "net": p["net"],
+            "width": min(w, h) if min(w, h) > 0 else max(w, h),
+            "w": w, "h": h, "shape": p.get("pad_shape") or "circle",
+            "rot": p.get("pad_rot") or 0.0,
             "refdes": p["refdes"], "pin": p["pin"],
-        })
+            "clear": p.get("polarity") == "clear",
+        }
+        if p.get("points"):
+            prim["points"] = p["points"]
+            prim["shape"] = "poly"
+        features.append(prim)
     for v in design.vias:
         if v["x"] is None:
             continue
         w = v["pad_mm"] or 0.5
         features.append({
             "type": "flash", "x1": v["x"], "y1": v["y"], "x2": v["x"], "y2": v["y"],
-            "layer": v["start_layer"] or "COPPER", "net": v["net"], "width": w,
+            "layer": v["start_layer"] or "COPPER", "net": v["net"],
+            "width": w, "w": w, "h": w, "shape": "circle",
         })
     for s in design.shapes:
+        pts = s.get("points")
+        if pts and len(pts) >= 3:
+            xs = [q[0] for q in pts]
+            ys = [q[1] for q in pts]
+            features.append({
+                "type": "region", "points": [(q[0], q[1]) for q in pts],
+                "holes": [[(q[0], q[1]) for q in hole] for hole in (s.get("holes") or [])],
+                "x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys),
+                "layer": s["layer"] or "COPPER", "net": s["net"],
+                "clear": s.get("polarity") == "clear",
+            })
+            continue
         bb = s["bbox"]
         if bb[0] is None:
             continue
@@ -423,6 +464,7 @@ def to_fab_data(design: BrdDesign) -> List[dict]:
                                           (bb[2], bb[3]), (bb[0], bb[3])],
             "x1": bb[0], "y1": bb[1], "x2": bb[2], "y2": bb[3],
             "layer": s["layer"] or "COPPER", "net": s["net"],
+            "clear": s.get("polarity") == "clear",
         })
 
     minx, miny, maxx, maxy = design.bbox
@@ -441,13 +483,19 @@ def to_fab_data(design: BrdDesign) -> List[dict]:
     for v in design.vias:
         if v["x"] is None or not v["drill_mm"]:
             continue
-        holes.append({"x": v["x"], "y": v["y"], "diameter_mm": v["drill_mm"],
-                      "plating": "PTH", "tool": 1})
+        hole = {"x": v["x"], "y": v["y"], "diameter_mm": v["drill_mm"],
+                "plating": "NPTH" if v.get("type") == "npth" else "PTH", "tool": 1,
+                "is_slot": bool(v.get("is_slot"))}
+        if v.get("is_slot") and v.get("x2") is not None:
+            hole["x2"] = v["x2"]
+            hole["y2"] = v["y2"]
+            hole["length_mm"] = v.get("slot_length_mm")
+        holes.append(hole)
     for p in design.pads:
         if p["x"] is None or not p["drill_mm"] or p["drill_mm"] <= 0:
             continue
         holes.append({"x": p["x"], "y": p["y"], "diameter_mm": p["drill_mm"],
-                      "plating": "PTH", "tool": 1})
+                      "plating": "PTH", "tool": 1, "is_slot": False})
     drill = {
         "kind": "drill", "name": "DRILL", "file": design.source_path, "unit": "mm",
         "plating": "PTH", "holes": holes, "hole_count": len(holes),

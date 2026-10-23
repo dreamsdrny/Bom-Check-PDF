@@ -20,7 +20,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from dfm import paths
-from dfm.core.issue import SEVERITY_LEVELS, SEVERITY_ORDER, SEVERITY_WEIGHT, make_issue
+from dfm.core.issue import (SEVERITY_LEVELS, SEVERITY_ORDER, SEVERITY_WEIGHT,
+                            make_issue, warn_threshold)
 
 CONFIG_FILENAME = "checks.yaml"
 
@@ -32,6 +33,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "cap_penalty": 100.0,
         "weights": dict(SEVERITY_WEIGHT),
     },
+    # 「潜在损失」估算: 金额无统一出处, 默认关闭; 需要时按公司口径启用
+    "cost": {
+        "enabled": False,
+        "currency": "CNY",
+        "by_severity": {"危险": 2000, "高": 800, "中": 300, "低": 50, "关闭": 0},
+    },
     "checks": {
         "capability": {"enabled": True},
         "fabrication": {"enabled": True},
@@ -41,6 +48,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "fabnet": {"enabled": True},
         "panelization": {"enabled": True},
         "netclass": {"enabled": True},
+        "data_quality": {"enabled": True},
     },
     "assembly": {
         "min_component_spacing": 0.5,
@@ -95,7 +103,7 @@ class RuleOverride:
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, name: str, data: Any) -> "RuleOverride":
+    def from_dict(cls, name: str, data: Any) -> RuleOverride:
         data = data if isinstance(data, dict) else {}
         sev = data.get("severity")
         if sev is not None and sev not in SEVERITY_ORDER:
@@ -142,7 +150,7 @@ class RulesConfig:
 
     # ---------- 加载 ----------
     @classmethod
-    def load(cls, path: Optional[str] = None) -> "RulesConfig":
+    def load(cls, path: Optional[str] = None) -> RulesConfig:
         """加载规则集; path 为空时按搜索路径查找 checks.yaml。"""
         if path:
             candidates = [path]
@@ -151,9 +159,9 @@ class RulesConfig:
         for c in candidates:
             if c and os.path.isfile(c):
                 try:
-                    with open(c, "r", encoding="utf-8") as f:
+                    with open(c, encoding="utf-8") as f:
                         return cls(yaml.safe_load(f) or {}, source=c)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
         return cls({}, source="")
 
@@ -163,7 +171,7 @@ class RulesConfig:
             yaml.safe_dump(self.data, f, allow_unicode=True, sort_keys=False)
         return path
 
-    def reload(self) -> "RulesConfig":
+    def reload(self) -> RulesConfig:
         return RulesConfig.load(self.source or None)
 
     # ---------- 查询 ----------
@@ -190,6 +198,12 @@ class RulesConfig:
         s.setdefault("cap_penalty", 100.0)
         s.setdefault("weights", dict(SEVERITY_WEIGHT))
         return s
+
+    def cost_model(self) -> Dict[str, Any]:
+        """「潜在损失」估算配置 (默认关闭)。"""
+        c = dict(DEFAULT_CONFIG["cost"])
+        c.update(self.data.get("cost") or {})
+        return c
 
     def rule(self, name: str) -> Optional[RuleOverride]:
         if name in self._rule_cache:
@@ -254,7 +268,7 @@ class RulesConfig:
             if measured < ov.min:
                 issue["required"] = ov.min
                 return "fail"
-            if measured < ov.min * max(ratio, 1.0):
+            if measured < warn_threshold(ov.min, ratio, higher_is_better=True):
                 issue["required"] = ov.min
                 issue["severity"] = warn
                 return "warn"
@@ -263,7 +277,7 @@ class RulesConfig:
             if measured > ov.max:
                 issue["required"] = ov.max
                 return "fail"
-            if measured > ov.max * min(ratio, 1.0):
+            if measured > warn_threshold(ov.max, ratio, higher_is_better=False):
                 issue["required"] = ov.max
                 issue["severity"] = warn
                 return "warn"
@@ -353,7 +367,7 @@ def evaluate_custom_rules(params: Dict[str, Any],
         value = params.get(key) if isinstance(params, dict) else None
         try:
             violated = _violates(r.get("op", "ge"), value, r.get("value"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         if not violated:
             continue

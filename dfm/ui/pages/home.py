@@ -1,12 +1,11 @@
 """概览页: 快速开始 / 最近工程 / 当前结果评分与重点问题。"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-                               QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+                               QScrollArea, QVBoxLayout, QWidget)
 
 from dfm.ui.icons import icon, logo_pixmap
 from dfm.ui.pages.base import BasePage

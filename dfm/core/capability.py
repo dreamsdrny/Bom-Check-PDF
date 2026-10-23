@@ -26,7 +26,7 @@
 读取时统一用 :func:`_to_mm` 换算为 mm。
 """
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -111,7 +111,7 @@ def _load_db(factory_id: str) -> dict:
     cached = _DB_CACHE.get(factory_id)
     if cached is not None and _DB_CACHE_MTIME.get(factory_id) == mtime:
         return cached
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         db = yaml.safe_load(f) or {}
     db.setdefault("_source_file", path)
     _DB_CACHE[factory_id] = db
@@ -135,7 +135,7 @@ def factory_labels() -> Dict[str, str]:
         try:
             meta = _load_db(fid).get("meta") or {}
             out[fid] = str(meta.get("factory") or fid)
-        except Exception:  # noqa: BLE001
+        except Exception:
             out[fid] = fid
     return out
 
@@ -147,7 +147,7 @@ def factory_aliases() -> Dict[str, str]:
         out[fid.lower()] = fid
         try:
             meta = _load_db(fid).get("meta") or {}
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         names = [meta.get("factory")] + list(meta.get("aliases") or [])
         for nm in names:
@@ -323,6 +323,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
     level = normalize_level(capability_level)
     copper_um = _num(design.get("copper_um")) or 35.0
     copper_oz = _num(design.get("copper_oz")) or max(1.0, round(copper_um / 35.0, 1))
+    warn_ratio = float(rules.limit_warn_ratio()) if rules is not None else None
 
     items: List[dict] = []
 
@@ -344,7 +345,11 @@ def analyze_design(design: dict, board_type: str = "rigid",
         if ok:
             status = "pass"
             message = f"{name}: 设计 {design_val}{unit} 满足能力 {cap_val}{unit}"
-            near = (design_val >= cap_val * 0.8) if not higher_is_better else (design_val <= cap_val * 1.2)
+            # 接近制程极限判定: 统一走 issue.warn_threshold, 受规则集 limit_warn_ratio 控制
+            from dfm.core.issue import warn_threshold
+
+            band = warn_threshold(cap_val, warn_ratio, higher_is_better)
+            near = (design_val < band) if higher_is_better else (design_val > band)
             if near:
                 status = "warn_limit"
                 message = f"{name}: 设计 {design_val}{unit} 接近制程极限 {cap_val}{unit}"
@@ -592,7 +597,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
         result["issue_summary"] = summarize_issues(issues)
         result["risk"] = compute_risk_score(issues, scoring)
         result["info_stats"] = build_info_stats(design, capability, board_type)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["issues"] = []
         result["issue_summary"] = {}
         result["risk"] = {}

@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QScrollArea,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout,
+                               QHBoxLayout, QLabel, QMessageBox, QScrollArea,
                                QVBoxLayout, QWidget)
 
 from dfm import paths
@@ -192,17 +191,17 @@ class SettingsPage(BasePage):
     def _open_plugins(self) -> None:
         d = os.path.join(paths.user_data_dir(), "plugins")
         os.makedirs(d, exist_ok=True)
-        os.startfile(d)  # noqa: S606
+        os.startfile(d)
 
     def _open_user_dir(self) -> None:
-        os.startfile(paths.user_data_dir())  # noqa: S606
+        os.startfile(paths.user_data_dir())
 
     def _open_log(self) -> None:
         p = paths.log_path()
         if os.path.isfile(p):
-            os.startfile(p)  # noqa: S606
+            os.startfile(p)
         else:
-            os.startfile(os.path.dirname(p))  # noqa: S606
+            os.startfile(os.path.dirname(p))
 
     def _clear_recent(self) -> None:
         if QMessageBox.question(self, "确认", "清空最近工程记录?"):
@@ -211,7 +210,7 @@ class SettingsPage(BasePage):
     def _docs(self) -> None:
         docs = os.path.join(paths.app_root(), "docs")
         if os.path.isdir(docs):
-            os.startfile(docs)  # noqa: S606
+            os.startfile(docs)
         else:
             QMessageBox.information(self, "文档", "文档目录未找到 (docs/)")
 

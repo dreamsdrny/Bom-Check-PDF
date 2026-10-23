@@ -76,7 +76,7 @@ class AppState(QObject):
         p = paths.settings_path()
         if os.path.isfile(p):
             try:
-                with open(p, "r", encoding="utf-8") as f:
+                with open(p, encoding="utf-8") as f:
                     data = json.load(f) or {}
                 for k, v in data.items():
                     if k in self.settings:
@@ -85,7 +85,7 @@ class AppState(QObject):
                 for k, v in cfg.items():
                     if k in self.config:
                         self.config[k] = v
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def save_settings(self) -> None:
@@ -95,7 +95,7 @@ class AppState(QObject):
                               if k not in ("source_path", "fab_path")}
             with open(paths.settings_path(), "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     def setting(self, key: str, default=None):

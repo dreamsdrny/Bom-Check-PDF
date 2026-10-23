@@ -59,7 +59,7 @@ class TestText(ReportTestBase):
     def test_generate(self):
         path = os.path.join(self.tmp, "r.txt")
         generate_dfm_text(self.res, path, self.res["board_meta"])
-        text = open(path, "r", encoding="utf-8").read()
+        text = open(path, encoding="utf-8").read()
         self.assertIn("DEMO-2L-SAMPLE", text)
         self.assertIn("可制造性评分", text)
         self.assertGreater(len(text), 500)
@@ -69,7 +69,7 @@ class TestHtml(ReportTestBase):
     def test_generate(self):
         path = os.path.join(self.tmp, "r.html")
         generate_dfm_html(self.res, path)
-        html = open(path, "r", encoding="utf-8").read()
+        html = open(path, encoding="utf-8").read()
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("dfm-data", html)
         self.assertIn("issue-row", html)
@@ -79,7 +79,7 @@ class TestHtml(ReportTestBase):
     def test_svg_embedded(self):
         path = os.path.join(self.tmp, "r2.html")
         generate_dfm_html(self.res, path)
-        html = open(path, "r", encoding="utf-8").read()
+        html = open(path, encoding="utf-8").read()
         self.assertIn("<svg", html)
         self.assertIn("dfm-marker", html)
 
@@ -88,7 +88,7 @@ class TestHtml(ReportTestBase):
         res["fab_data"] = []
         path = os.path.join(self.tmp, "r3.html")
         generate_dfm_html(res, path)
-        html = open(path, "r", encoding="utf-8").read()
+        html = open(path, encoding="utf-8").read()
         self.assertIn("无几何数据", html)
 
     def test_escaping(self):
@@ -100,7 +100,7 @@ class TestHtml(ReportTestBase):
         res["fab_data"] = []
         path = os.path.join(self.tmp, "r4.html")
         generate_dfm_html(res, path)
-        html = open(path, "r", encoding="utf-8").read()
+        html = open(path, encoding="utf-8").read()
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;", html)
 
@@ -137,7 +137,7 @@ class TestJsonAndFacade(ReportTestBase):
     def test_save_json(self):
         path = os.path.join(self.tmp, "r.json")
         save_json(self.res, path)
-        data = json.load(open(path, "r", encoding="utf-8"))
+        data = json.load(open(path, encoding="utf-8"))
         self.assertEqual(data["issue_summary"]["总计"], len(self.res["issues"]))
 
     def test_export_all_formats(self):

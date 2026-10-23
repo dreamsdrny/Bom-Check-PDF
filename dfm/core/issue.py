@@ -27,7 +27,6 @@ MIL_TO_MM = 0.0254
 
 SEVERITY_LEVELS = ["危险", "高", "中", "低", "关闭"]
 SEVERITY_ORDER = {s: i for i, s in enumerate(SEVERITY_LEVELS)}
-SEVERITY_LABEL_EN = {"危险": "Critical", "高": "High", "中": "Medium", "低": "Low", "关闭": "Closed"}
 SEVERITY_COLOR = {
     "危险": "FFC7CE",
     "高": "FFD8A8",
@@ -168,6 +167,49 @@ def _num(value) -> Optional[float]:
         return None
 
 
+#: 默认「接近制程极限」告警系数 (见 rules/checks.yaml 的 limit_warn_ratio)
+DEFAULT_WARN_RATIO = 0.8
+
+
+def warn_threshold(limit: float, ratio: Optional[float] = None,
+                   higher_is_better: bool = True) -> float:
+    """计算「接近极限」告警阈值 — 全系统唯一实现。
+
+    :param limit: 能力/规则要求值
+    :param ratio: 告警系数 (0<ratio<1), 缺省 :data:`DEFAULT_WARN_RATIO`
+    :param higher_is_better: True=越大越好(线宽/孔径/孔环), False=越小越好(间距上限)
+
+    语义 (以 ratio=0.8 为例):
+      * 越大越好: 实测 < limit → 违规; limit ≤ 实测 < limit/0.8 (即 1.25 倍以内) → 接近极限
+      * 越小越好: 实测 > limit → 违规; limit*0.8 < 实测 ≤ limit → 接近极限
+    """
+    r = float(ratio if ratio else DEFAULT_WARN_RATIO)
+    if r <= 0:
+        r = DEFAULT_WARN_RATIO
+    if higher_is_better:
+        return limit / r if r < 1.0 else limit * r
+    return limit * r if r < 1.0 else limit / r
+
+
+def classify_limit(measured: Optional[float], limit: Optional[float],
+                   higher_is_better: bool = True,
+                   ratio: Optional[float] = None) -> str:
+    """按能力限值分级: 返回 ``危险`` (超出能力) / ``高`` (接近极限) / ``""`` (合格)。"""
+    if measured is None or limit is None:
+        return ""
+    if higher_is_better:
+        if measured < limit:
+            return "危险"
+        if measured < warn_threshold(limit, ratio, True):
+            return "高"
+        return ""
+    if measured > limit:
+        return "危险"
+    if measured > warn_threshold(limit, ratio, False):
+        return "高"
+    return ""
+
+
 def _to_mm(spec) -> Optional[float]:
     if not isinstance(spec, dict):
         return None
@@ -269,9 +311,7 @@ def _fabrication_extra_issues(design: dict, capability: dict,
         chosen = None
         for row in laser_limit:
             h = _num(row.get("hole_um"))
-            if h is not None and h <= laser_hole_um:
-                chosen = row
-            elif h is not None and chosen is None:
+            if h is not None and h <= laser_hole_um or h is not None and chosen is None:
                 chosen = row
         if chosen is None:
             chosen = laser_limit[0]
@@ -350,7 +390,7 @@ def _fabrication_extra_issues(design: dict, capability: dict,
     finish = capability.get("surface_finish", {})
     d_finish = design.get("surface_finish")
     if finish and d_finish:
-        keys = {str(k).lower(): str(k) for k in finish.keys()}
+        keys = {str(k).lower(): str(k) for k in finish}
         dtxt = str(d_finish).strip()
         if dtxt.lower() not in keys and dtxt not in finish:
             issues.append(_relay_issue(
@@ -369,7 +409,7 @@ def _params(rules, group: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
     for k in defaults:
         try:
             v = rules.param(group, k, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             v = None
         if v is not None:
             out[k] = v
@@ -560,10 +600,15 @@ def build_issues(design: dict, capability: dict, items: List[dict],
 
 
 def aggregate_by_rule(instances: List[dict],
-                      max_locations: int = MAX_LOCATIONS_PER_ISSUE) -> List[dict]:
+                      max_locations: int = MAX_LOCATIONS_PER_ISSUE,
+                      counts: Optional[Dict[tuple, int]] = None) -> List[dict]:
     """把逐处问题实例按 (类别, 规则) 汇总为报告用问题 (每规则一条)。
 
-    保留 ``locations`` (全部定位点) 与代表点 ``x``/``y``, 供界面交叉定位使用。
+    :param counts: ``{(类别, 规则): 真实处数}``。实例可能因上限被截断,
+                   因此**数量必须以计数为准**, 不能用 ``len(实例)``;
+                   未提供时退化为实例数。
+    保留 ``locations`` (定位点, 受 ``max_locations`` 限制) 与代表点 ``x``/``y``,
+    并在截断时写 ``truncated`` / ``instance_cap`` 供报告与界面提示。
     """
     groups: Dict[tuple, List[dict]] = {}
     order: List[tuple] = []
@@ -573,12 +618,26 @@ def aggregate_by_rule(instances: List[dict],
             groups[key] = []
             order.append(key)
         groups[key].append(it)
+    for key in (counts or {}):
+        if key not in groups and (counts or {}).get(key):
+            groups[key] = []
+            order.append(key)
 
     prefix_counter: Dict[str, int] = {}
     aggregated: List[dict] = []
     for key in order:
         category, rule = key
         grp = groups[key]
+        true_count = int((counts or {}).get(key, 0)) or len(grp)
+        if not grp:
+            # 有计数但实例已被截断丢弃: 仍需报告该规则
+            aggregated.append(make_issue(
+                code="", category=category, rule=rule, severity="中",
+                description=f"{rule}: 共发现 {true_count} 处 (实例数超出留存上限, 未记录坐标)",
+                count=true_count))
+            aggregated[-1]["truncated"] = True
+            aggregated[-1]["locations"] = []
+            continue
         sev = min(grp, key=lambda x: SEVERITY_ORDER.get(x.get("severity", "中"), 9))["severity"]
         prefix = CATEGORY_PREFIX.get(category, DEFAULT_PREFIX)
         if category in ("网络比对", "开短路", "网表", "网表一致性"):
@@ -593,21 +652,98 @@ def aggregate_by_rule(instances: List[dict],
         rep = next((g for g in grp if g.get("x") is not None), grp[0])
         locations = [[g.get("x"), g.get("y")] for g in grp
                      if g.get("x") is not None and g.get("y") is not None]
-        n = len(grp)
-        desc = (f"{rule}: 共发现 {n} 处。示例 - {rep.get('description', '')}"
-                if n > 1 else rep.get("description", ""))
+        desc = (f"{rule}: 共发现 {true_count} 处。示例 - {rep.get('description', '')}"
+                if true_count > 1 else rep.get("description", ""))
         aggregated.append(make_issue(
             code=code, category=category, rule=rule, severity=sev,
             description=desc, suggestion=rep.get("suggestion", ""),
             measured=rep.get("measured"), required=rep.get("required"),
             unit=rep.get("unit", ""), layer=rep.get("layer", ""),
             from_=rep.get("from", ""), to=rep.get("to", ""),
-            x=rep.get("x"), y=rep.get("y"), count=n, note=rep.get("note", ""),
+            x=rep.get("x"), y=rep.get("y"), count=true_count, note=rep.get("note", ""),
             net=rep.get("net", ""),
         ))
         aggregated[-1]["locations"] = locations[:max_locations]
+        if true_count > len(grp):
+            aggregated[-1]["truncated"] = True
+            aggregated[-1]["instance_cap"] = len(grp)
     aggregated.sort(key=lambda x: (SEVERITY_ORDER.get(x["severity"], 9), x["code"]))
     return aggregated
+
+
+class IssueCollector:
+    """检查内部的实例收集器: **计数与留存分离**。
+
+    旧实现按"已留存实例数"当作问题数量, 密集板会报"共 500 处"而真实为数千处。
+    本收集器对每处违规都累加计数, 只在未超过 ``cap`` 时保留实例 (含坐标),
+    汇总时用真实计数, 并标记 ``truncated``。
+
+    用法::
+
+        col = IssueCollector(cap=500)
+        col.add("线路", "最小线宽", "危险", "描述", x=1.0, y=2.0, measured=0.05,
+                required=0.1, unit="mm")
+        issues = col.aggregate()
+    """
+
+    def __init__(self, cap: int = 500, max_locations: int = MAX_LOCATIONS_PER_ISSUE):
+        self.cap = int(cap)
+        self.max_locations = int(max_locations)
+        self.instances: List[dict] = []
+        self.counts: Dict[tuple, int] = {}
+        self.retained: Dict[tuple, int] = {}
+        self.severity_worst: Dict[tuple, str] = {}
+        self.prefix_hint: Dict[str, str] = {}
+
+    def add(self, category: str, rule: str, severity: str, description: str,
+            code: str = "", **kwargs) -> Optional[dict]:
+        """记录一处违规; 返回被留存的 Issue (超出上限时返回 None)。"""
+        key = (category, rule)
+        self.counts[key] = self.counts.get(key, 0) + 1
+        prev = self.severity_worst.get(key)
+        if prev is None or SEVERITY_ORDER.get(severity, 9) < SEVERITY_ORDER.get(prev, 9):
+            self.severity_worst[key] = severity
+        kept = self.retained.get(key, 0)
+        if kept >= self.cap:
+            return None
+        self.retained[key] = kept + 1
+        issue = make_issue(code=code or f"TMP-{self.counts[key]:05d}",
+                           category=category, rule=rule, severity=severity,
+                           description=description, **kwargs)
+        self.instances.append(issue)
+        return issue
+
+    def count(self, category: str, rule: str) -> int:
+        return self.counts.get((category, rule), 0)
+
+    def truncated(self, category: str, rule: str) -> bool:
+        key = (category, rule)
+        return self.counts.get(key, 0) > self.retained.get(key, 0)
+
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+    def truncated_rules(self) -> List[str]:
+        return [f"{c}/{r}" for (c, r), n in self.counts.items()
+                if n > self.retained.get((c, r), 0)]
+
+    def aggregate(self) -> List[dict]:
+        out = aggregate_by_rule(self.instances, max_locations=self.max_locations,
+                                counts=dict(self.counts))
+        for it in out:
+            key = (it.get("category"), it.get("rule"))
+            if self.counts.get(key, 0) > self.retained.get(key, 0):
+                it["truncated"] = True
+                it["instance_cap"] = self.retained.get(key, 0)
+        return out
+
+    def stats(self) -> dict:
+        return {
+            "违规处数合计": self.total(),
+            "留存实例数": len(self.instances),
+            "被截断的规则": ", ".join(self.truncated_rules()) or "无",
+            "每规则留存上限": self.cap,
+        }
 
 
 def renumber_issues(issues: List[dict]) -> List[dict]:
@@ -639,7 +775,7 @@ def renumber_issues(issues: List[dict]) -> List[dict]:
 
 
 def summarize_issues(issues: List[dict]) -> Dict[str, int]:
-    summary = {s: 0 for s in SEVERITY_LEVELS}
+    summary = dict.fromkeys(SEVERITY_LEVELS, 0)
     for it in issues:
         summary[it.get("severity", "中")] = summary.get(it.get("severity", "中"), 0) + 1
     summary["总计"] = len(issues)
@@ -759,21 +895,3 @@ def _tolerance_text(rows, width_um) -> str:
     return ""
 
 
-def build_issue_report(design: dict, capability: dict, board_type: str,
-                       factory: str, factory_label: str, items: List[dict],
-                       board_meta: Optional[dict] = None,
-                       rules=None) -> dict:
-    issues = build_issues(design, capability, items, rules)
-    risk = compute_risk_score(issues, rules.scoring() if rules is not None else None)
-    info = build_info_stats(design, capability, board_type)
-    return {
-        "board_meta": board_meta or {},
-        "factory": factory,
-        "factory_label": factory_label,
-        "board_type": board_type,
-        "issues": issues,
-        "issue_summary": summarize_issues(issues),
-        "risk": risk,
-        "info": info,
-        "info_stats": info,
-    }

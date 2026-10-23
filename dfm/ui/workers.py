@@ -13,11 +13,13 @@ class AnalysisWorker(QThread):
     信号::
 
         progress(str)      进度消息 (可直接进日志与状态栏)
+        step(int, int, str) 确定性进度 (已完成, 总数, 当前检查名)
         finished_(dict)    分析结果 (analysis)
         failed(str)        错误信息 (含堆栈)
     """
 
     progress = Signal(str)
+    step = Signal(int, int, str)
     finished_ = Signal(dict)
     failed = Signal(str)
 
@@ -25,13 +27,15 @@ class AnalysisWorker(QThread):
         super().__init__(parent)
         self.cfg = dict(cfg or {})
 
-    def run(self) -> None:  # noqa: D102
+    def run(self) -> None:
         try:
             from dfm.core.pipeline import analyze
 
-            result = analyze(self.cfg, progress=lambda m: self.progress.emit(str(m)))
+            result = analyze(self.cfg,
+                             progress=lambda m: self.progress.emit(str(m)),
+                             on_step=lambda d, t, n: self.step.emit(int(d), int(t), str(n)))
             self.finished_.emit(result)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")
 
 
@@ -48,8 +52,8 @@ class TaskWorker(QThread):
         self.args = args
         self.kwargs = kwargs
 
-    def run(self) -> None:  # noqa: D102
+    def run(self) -> None:
         try:
             self.finished_.emit(self.fn(*self.args, **self.kwargs))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")

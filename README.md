@@ -11,15 +11,17 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 多源解析 | Allegro `.brd`（extracta 无界面提取）、SKILL/extracta 导出 JSON、Gerber RS-274X（含 X2 属性）、ODB++ 工程、Excellon 钻孔 |
-| 制造 DFM | 最小线宽/线距（按成品铜厚分档）、单边孔环、机械孔/激光孔径、PTH 纵横比、线路到板边、阻焊桥、丝印、塞孔、覆盖膜、表面处理、电测 PAD |
+| 多源解析 | Allegro `.brd`（extracta 无界面提取）、SKILL/extracta 导出 JSON、Gerber RS-274X（含**光圈宏 %AM**、**阵列 SR**、**负片极性 %LPC/%IP**、X2 属性）、ODB++ 工程（**符号表真实尺寸**、铺铜 surface、阵列 R、**gzip/tgz/zip 自动解包**）、Excellon 钻孔（刀具表、重复孔 R##、**G85 与 M15/M16 槽孔**） |
+| 几何内核 | `dfm/geom`：真实形状（圆/矩形/椭圆/多边形/圆弧）+ 负片极性布尔合成 + 精确净距（GEOS）+ 共享空间索引；矩形焊盘不再按外接圆近似，铺铜按真实轮廓判定 |
+| 制造 DFM | 最小线宽/线距（按成品铜厚分档）、单边孔环、机械孔/激光孔径、PTH 纵横比、线路到板边、**孔到板边**、**孔到孔间距(CAF)**、**槽孔宽度**、阻焊桥、丝印、塞孔、覆盖膜、表面处理、电测 PAD |
 | 装配 / SMT DFM | 器件间距、器件/焊盘到板边、片式焊盘对称性（墓碑）、细间距与 BGA 孔环、Via in Pad、丝印上焊盘、基准点数量与尺寸、测试点覆盖率/尺寸/到板边 |
-| 开短路与网表 | 几何连通性判定开路/短路（定位 XY）、逻辑网表一致性、CAD vs FAB 网络比对 |
+| 开短路与网表 | 基于**真实几何与极性合成**判定开路/短路（定位 XY）、逻辑网表一致性、CAD vs FAB 网络比对 |
 | 拼板 / 工艺边 | 工作板尺寸、工艺边宽度、Mark 点数量与位置、定位孔、板材利用率 |
-| 制造数据完整性 | 缺层、单位/格式声明、光圈未定义、坐标越界、孤立孔、层原点偏移 |
-| 评分与报告 | 可制造性评分（可配权重）、良率区间、Excel（多页 + 内嵌版图截图）、HTML（交互式单文件）、JSON、TXT、SVG |
-| 自定义规则引擎 | `rules/capability/*.yaml` 板厂能力库自动发现；`rules/checks.yaml` 控制开关/阈值/严重度/评分；声明式 `custom_rules` 无需写代码 |
-| 二次开发 | 检查项插件注册、页面基类、统一 `analysis` 数据结构、CLI 与 JSON 输出 |
+| 制造数据完整性 | 缺层、单位/格式声明、光圈未定义、坐标越界、孤立孔、层原点偏移、负片层提示 |
+| 判定可信度 | **判定覆盖率**（哪些规则真的判过、哪些因能力库缺项未判）、**数据质量**（解析受限/负片合成/元素截断）、**处数与留存分离**（密集板不再把"留存 500 处"当成"共 500 处"） |
+| 评分与报告 | 可制造性评分（权重可配）、良率区间、Excel（多页 + 内嵌版图截图 + 数据质量页）、HTML（交互式单文件）、JSON、TXT、SVG |
+| 自定义规则引擎 | `rules/capability/*.yaml` 板厂能力库自动发现；`rules/checks.yaml` 控制开关/阈值/严重度/告警带/评分/损失模型；声明式 `custom_rules` 无需写代码 |
+| 二次开发 | 检查项插件注册、共享几何模型 `ctx.geometry`、页面基类、统一 `analysis` 数据结构、CLI 与 JSON 输出 |
 
 ## 安装与启动
 
@@ -66,29 +68,41 @@ python -m dfm checks
 DFM-AI/
 ├─ evan_dfm.py            启动脚本 (GUI / cli / viewer)
 ├─ build.bat              PyInstaller 打包
-├─ EvanDFM.spec           打包配置
+├─ EvanDFM.spec           打包配置 (含 shapely/检查模块 hiddenimports)
+├─ Evan_DFM.manifest      Per-Monitor V2 高 DPI / UTF-8 / 长路径
 ├─ pyproject.toml         依赖与打包元数据
+├─ requirements.txt       运行依赖 (PySide6 / shapely / openpyxl / PyYAML / Pillow)
 ├─ dfm/                   主程序包
-│  ├─ app.py              应用启动 (QApplication / 主题 / 日志 / DPI)
+│  ├─ app.py              应用启动 (QApplication / 主题 / 日志 / DPI / 独立版图窗口)
 │  ├─ cli.py              命令行
-│  ├─ paths.py            路径解析 (开发/打包/用户目录)
+│  ├─ paths.py            路径解析 (开发 / 打包 / 用户可写目录)
 │  ├─ branding.py         品牌信息
-│  ├─ core/               issue(问题模型) capability(能力库) rules_config(规则集)
-│  │                      registry(检查注册/插件) source(数据源归一) pipeline(编排)
+│  ├─ geom/               ★ 几何内核 (判定精度基础)
+│  │  ├─ shapes.py        真实形状: 线段/圆/矩形/椭圆/多边形/圆弧 (解析包围盒)
+│  │  ├─ elements.py      元素: 形状 + 层 + 网络 + 极性
+│  │  ├─ polarity.py      负片合成: dark − clear (内层平面/anti-pad)
+│  │  ├─ clearance.py     精确净距 (解析快路径 + GEOS 精算) 与广相候选
+│  │  ├─ board.py         BoardGeometry: 一次构建、多检查复用的共享模型
+│  │  └─ measure.py       器件本体/间距/基准点/引脚间距等共享量测
+│  ├─ core/               issue(问题模型+计数) capability(能力库) rules_config(规则集)
+│  │                      registry(检查注册/插件) source(数据源归一) coverage(覆盖率/数据质量)
+│  │                      pipeline(编排)
 │  ├─ checks/             fabrication assembly netlist fabdata fabnet
 │  │                      panelization capability netclass
-│  ├─ io/                 brd_model extracta skill_export fab gerber_model
+│  ├─ io/                 gerber(RS-274X) aperture(光圈/宏) excellon(钻孔/槽孔)
+│  │                      odbpp(作业/符号/压缩包) brd_model extracta skill_export
+│  │                      fab(统一入口/完整性/网表比对/转设计模型)
 │  ├─ report/             writers(Excel/TXT) html svg snapshot __init__(导出门面)
 │  └─ ui/                 main_window state theme icons workers
 │                         pages/(home project analysis results board rules report settings)
 │                         widgets/(common issue_table board_view)
 ├─ rules/
 │  ├─ capability/         jlcpcb.yaml (示例, 取自公开能力表) ← 板厂制程能力库
-│  └─ checks.yaml         规则集 (开关/阈值/严重度/评分/自定义规则)
+│  └─ checks.yaml         规则集 (开关/阈值/严重度/告警带/评分/损失/自定义规则)
 ├─ plugins/               检查插件目录 (_sample_check.py 为示例, 默认不加载)
 ├─ assets/                图标 (evan.ico / evan.png)
 ├─ samples/               示例数据 (brd_export_sample.json / dfm_design_params.json)
-├─ tests/                 单元测试 (python -m unittest discover -s tests)
+├─ tests/                 单元测试 214 项 (python -m unittest discover -s tests)
 └─ docs/                  教程与手册
    ├─ 01-快速上手.md
    ├─ 02-用户手册.md
@@ -97,26 +111,34 @@ DFM-AI/
    ├─ 05-命令行与自动化.md
    ├─ 06-常见问题FAQ.md
    ├─ 07-检查规则清单.md
-   └─ capability-template.yaml  新增板厂能力库模板
+   ├─ 08-更新日志.md
+   └─ capability-template.yaml   新增板厂能力库模板
 ```
 
 ## 数据流
 
 ```
-输入                     归一化                        检查                          输出
-────────────────────────────────────────────────────────────────────────────────────────
+输入                          归一化                          检查                        输出
+──────────────────────────────────────────────────────────────────────────────────────────────
 .brd ──extracta──┐
-.json (SKILL)  ──┼─→ BrdDesign ─┬─→ fabrication  几何制造 DFM (XY) ─┐
-Gerber/ODB++ ────┘   (统一模型)  ├─→ assembly     装配 / SMT DFM     │
-                      │          ├─→ netlist      开短路 / 网表一致性 ├─→ Issue[]
-设计参数 JSON ─────────┼─→ params ├─→ capability   制程能力比对       │   ↓
-CAD 网表 JSON ─────────┘          ├─→ fabnet       CAD vs FAB        │  规则集改判
-                                  ├─→ panelization 拼板 / 工艺边      │  (阈值/严重度/开关)
-fab_data (渲染几何) ──────────────┴─→ fabdata      制造数据完整性 ────┘   ↓
-                                                              评分 + 汇总 → analysis
-                                                                            ↓
-                                             Excel / HTML / JSON / TXT / SVG + 版图交叉定位
+.json (SKILL)  ──┤
+Gerber(宏/阵列/  ├─→ 解析层 ─→ BrdDesign ─→ BoardGeometry ─┬→ fabrication 几何制造 DFM ─┐
+  负片/X2)     ──┤   io/*      (统一模型)   (真实形状+极性  ├→ assembly    装配/SMT DFM  │
+ODB++(符号/铺铜/ │                            合成+共享索引) ├→ netlist     开短路/网表    ├→ Issue[]
+  压缩包)      ──┤                                          │                            │   (处数与
+Excellon(槽孔/ ──┘                                          ├→ fabdata     制造数据完整性 │    留存分离)
+  重复孔/刀具表)                                             ├→ fabnet      CAD vs FAB    │      ↓
+设计参数 JSON ──────→ params ───────────────────────────────┼→ capability  制程能力比对   │  规则集改判
+CAD 网表 JSON ──────→ cad_nets ─────────────────────────────┼→ panelization 拼板/工艺边   │  (阈值/严重度
+                                                            └→ netclass    网络分类/阻抗  ─┘   /告警带/开关)
+                                                                                        ↓
+                                          Coverage 判定覆盖率 + DataQuality 数据质量 → 评分汇总
+                                                                                        ↓
+                                       Excel(含数据质量页) / HTML / JSON / TXT / SVG + 版图交叉定位
 ```
+
+**关键不变量**：`core / checks / geom / io / report` 均不依赖 Qt，可单独用于 CI、
+服务端与脚本；几何模型 `BoardGeometry` 一次构建、多检查复用。
 
 ## 文档
 
@@ -127,6 +149,7 @@ fab_data (渲染几何) ──────────────┴─→ fabd
 - [命令行与自动化](docs/05-命令行与自动化.md) — 全部命令与参数、CI/MES 集成
 - [常见问题 FAQ](docs/06-常见问题FAQ.md) — extracta、Gerber 无 X2、性能、误报、打包
 - [检查规则清单](docs/07-检查规则清单.md) — 全部规则的判定依据与严重度
+- [更新日志](docs/08-更新日志.md) — v1.1 判定正确性与解析完整性重构（13 项缺陷修复明细）
 
 ## 许可
 

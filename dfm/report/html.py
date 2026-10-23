@@ -16,7 +16,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from dfm.core.issue import SEVERITY_COLOR, SEVERITY_LEVELS
+from dfm.core.issue import SEVERITY_LEVELS
 from dfm.report.svg import render_board_svg
 
 SEV_CSS = {
@@ -90,6 +90,69 @@ def _gauge(score: float, risk: str) -> str:
         "<text x='60' y='66' class='gauge-lbl'>/ 100</text></svg>")
 
 
+def _quality_section(analysis: Dict[str, Any]) -> str:
+    """数据质量与判定覆盖率区块 — 让「没检查」显式可见。"""
+    dq = analysis.get("data_quality") or {}
+    coverage = analysis.get("coverage") or []
+    if not dq and not coverage:
+        return ""
+    missed = dq.get("未判定规则") or []
+    notes = dq.get("解析提示") or []
+    trunc = dq.get("截断") or []
+    fatal = dq.get("致命问题") or []
+    geo = dq.get("几何统计") or {}
+
+    cov_rows = "".join(
+        "<tr><td>{c}</td><td class='c'>{j}</td><td class='c'>{m}</td>"
+        "<td class='c'><span class='bar'><i style='width:{p:.0f}%'></i></span>{p:.0f}%</td></tr>".format(
+            c=_esc(x.get("check", "")), j=x.get("judged_count", 0),
+            m=x.get("missed_count", 0), p=float(x.get("ratio", 0)) * 100)
+        for x in coverage)
+
+    geo_rows = "".join(f"<tr><th>{_esc(k)}</th><td>{_esc(_fmt(v))}</td></tr>"
+                       for k, v in geo.items() if v not in (None, ""))
+    note_rows = "".join(f"<li>{_esc(n)}</li>" for n in notes[:30])
+    miss_rows = "".join(
+        f"<li><b>{_esc(m.get('rule', '') if isinstance(m, dict) else m)}</b>"
+        + (f" — {_esc(m.get('reason', ''))}" if isinstance(m, dict) and m.get("reason") else "")
+        + "</li>"
+        for m in missed[:40])
+    trunc_rows = "".join(f"<li>{_esc(t)}</li>" for t in trunc[:10])
+    fatal_rows = "".join(f"<li class='bad'>{_esc(t)}</li>" for t in fatal[:10])
+
+    warn = ""
+    if missed:
+        warn = ("<div class='qwarn'>⚠ 本次有 <b>%d</b> 项规则<b>未做判定</b>"
+                "（能力库缺项或数据不足）。「未发现问题」不等于「已判定合格」。</div>"
+                % len(missed))
+    return f"""
+<section class="card">
+  <h3>数据质量与判定覆盖率 <small>解析是否有损、规则是否真的判过</small></h3>
+  {warn}
+  <div class="qgrid">
+    <div>
+      <table class="kv"><tr><th>规则判定覆盖率</th>
+        <td><b>{_esc(dq.get('规则判定覆盖率', '—'))}</b></td></tr>
+      <tr><th>数据源</th><td>{_esc(dq.get('数据源', '—'))}</td></tr>
+      <tr><th>负片(clear)图元</th><td>{_esc(_fmt(dq.get('负片(clear)图元')))}</td></tr>
+      <tr><th>被挖除铜箔 (完全/部分)</th><td>{_esc(dq.get('被挖除铜箔'))}</td></tr>
+      <tr><th>解析提示</th><td>{_esc(len(notes))} 条</td></tr>
+      <tr><th>截断</th><td>{_esc(len(trunc))} 处</td></tr>
+      </table>
+      {'<table class="kv">' + geo_rows + '</table>' if geo_rows else ''}
+    </div>
+    <div>
+      {'<table class="issues"><thead><tr><th>检查</th><th>已判定</th><th>未判定</th><th>覆盖率</th></tr></thead><tbody>' + cov_rows + '</tbody></table>' if cov_rows else ''}
+      {'<h4>未判定规则</h4><ul class="notes">' + miss_rows + '</ul>' if miss_rows else ''}
+      {'<h4>解析提示</h4><ul class="notes">' + note_rows + '</ul>' if note_rows else ''}
+      {'<h4>截断</h4><ul class="notes">' + trunc_rows + '</ul>' if trunc_rows else ''}
+      {'<h4>致命问题</h4><ul class="notes">' + fatal_rows + '</ul>' if fatal_rows else ''}
+    </div>
+  </div>
+</section>"""
+
+
+
 def generate_dfm_html(analysis: Dict[str, Any], output_path: str,
                       board_meta: Optional[dict] = None,
                       embed_svg: bool = True) -> str:
@@ -109,7 +172,7 @@ def generate_dfm_html(analysis: Dict[str, Any], output_path: str,
         try:
             svg = render_board_svg(analysis["fab_data"], markers, width=1400,
                                    title=board_meta.get("board_name", ""))
-        except Exception:  # noqa: BLE001
+        except Exception:
             svg = ""
 
     rows = []
@@ -270,6 +333,8 @@ def generate_dfm_html(analysis: Dict[str, Any], output_path: str,
   {_kv_table('Gerber 层识别', {k: v for k, v in gm.items() if k != 'layer_identification'} if gm else {})}
 </section>
 
+{_quality_section(analysis)}
+
 {'<section class="card"><h3>制程能力逐项比对</h3><div class="table-wrap"><table class="issues cap"><thead><tr><th>结果</th><th>类别</th><th>项目</th><th>设计值</th><th>能力值</th><th>单位</th><th>说明</th></tr></thead><tbody>' + cap_rows + '</tbody></table></div></section>' if cap_rows else ''}
 
 <section class="grid2">
@@ -375,6 +440,15 @@ ul.checks{margin:0;padding-left:18px}ul.checks li{margin:3px 0}
 ul.checks li.ok::marker{color:#46a758}ul.checks li.skip{color:var(--mut)}
 ul.checks li.skip span{color:#7d8894}
 ul.notes{margin:10px 0 0;padding-left:18px;color:var(--mut);font-size:12px}
+.qgrid{display:grid;grid-template-columns:minmax(280px,1fr) minmax(320px,1.4fr);gap:18px}
+.qwarn{background:#3a2a12;border:1px solid #7a5a1e;color:#ffd479;padding:9px 12px;
+border-radius:8px;margin-bottom:12px;font-size:13px}
+.qgrid h4{margin:14px 0 4px;font-size:12px;color:#cdd9e5}
+.bar{display:inline-block;width:70px;height:6px;background:#2a2f36;border-radius:3px;
+overflow:hidden;vertical-align:middle;margin-right:6px}
+.bar>i{display:block;height:100%;background:var(--acc)}
+ul.notes li.bad{color:#f0554d}
+@media(max-width:1000px){.qgrid{grid-template-columns:1fr}}
 footer{padding:20px 24px;color:var(--mut);font-size:12px;border-top:1px solid var(--line);
 margin-top:20px;text-align:center}
 .dfm-marker{cursor:pointer}
@@ -391,14 +465,18 @@ _JS = """
   var probe = document.getElementById('probe');
   var markers = svg ? Array.prototype.slice.call(svg.querySelectorAll('.dfm-marker')) : [];
   var byIdx = {};
-  markers.forEach(function(m){ byIdx[m.getAttribute('data-idx')] = m; });
+  markers.forEach(function(m){
+    byIdx[m.getAttribute('data-idx')] = m;
+    m.setAttribute('data-r0', m.getAttribute('r'));     // 记录原始半径, 选中时放大
+  });
 
   function select(i, scroll){
     rows.forEach(function(r){ r.classList.toggle('sel', r.getAttribute('data-idx') === String(i)); });
     markers.forEach(function(m){
       var on = m.getAttribute('data-idx') === String(i);
       m.classList.toggle('sel', on);
-      m.setAttribute('r', on ? (parseFloat(m.getAttribute('r')) * 1.0) : m.getAttribute('r'));
+      var r0 = parseFloat(m.getAttribute('data-r0'));
+      m.setAttribute('r', on ? r0 * 1.8 : r0);
     });
     var it = data.issues[i];
     if (it){

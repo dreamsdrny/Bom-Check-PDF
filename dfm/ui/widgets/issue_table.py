@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeade
 
 from dfm.core.issue import SEVERITY_LEVELS
 from dfm.ui.icons import icon
-from dfm.ui.theme import MONO, SEVERITY_COLORS, colors
+from dfm.ui.theme import SEVERITY_COLORS, colors
 
 #: (键, 表头, 宽度, 对齐)
 COLUMNS = [
@@ -115,7 +115,7 @@ class IssueModel(QAbstractTableModel):
                        if it.get("module")})
 
     def severity_counts(self) -> Dict[str, int]:
-        out = {s: 0 for s in SEVERITY_LEVELS}
+        out = dict.fromkeys(SEVERITY_LEVELS, 0)
         for it in self._issues:
             out[it.get("severity", "中")] = out.get(it.get("severity", "中"), 0) + 1
         return out
@@ -128,13 +128,14 @@ class IssueModel(QAbstractTableModel):
             self.dataChanged.emit(top, bottom)
 
     # ---- QAbstractTableModel ----
-    def rowCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+    # QModelIndex() 作为默认值是 Qt 模型的固定写法 (不可变值对象, 无 B008 风险)
+    def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._view)
 
-    def columnCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+    def columnCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(COLUMNS)
 
-    def headerData(self, section, orientation, role=Qt.DisplayRole):  # noqa: N802
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
             return COLUMNS[section][1]
         if orientation == Qt.Vertical and role == Qt.DisplayRole:
@@ -162,15 +163,21 @@ class IssueModel(QAbstractTableModel):
                 return QBrush(QColor(colors()["sel"]))
             return None
         if role == Qt.ToolTipRole:
-            return (f"[{it.get('severity')}] {it.get('code')} {it.get('rule')}\n"
-                    f"{it.get('description')}\n建议: {it.get('suggestion')}\n"
-                    f"检查: {it.get('check_name') or it.get('module')}"
-                    + (f"\n定位点: {len(it.get('locations') or [])} 处"
-                       if it.get("locations") else ""))
+            tip = (f"[{it.get('severity')}] {it.get('code')} {it.get('rule')}\n"
+                   f"{it.get('description')}\n建议: {it.get('suggestion')}\n"
+                   f"检查: {it.get('check_name') or it.get('module')}")
+            if it.get("locations"):
+                tip += f"\n定位点: {len(it['locations'])} 处"
+            if it.get("truncated"):
+                tip += (f"\n⚠ 实际 {it.get('count')} 处, 因超出留存上限"
+                        f"({it.get('instance_cap', '')}) 仅记录部分坐标")
+            return tip
         if role != Qt.DisplayRole:
             return None
         if key == "count":
-            return str(it.get("count", 1))
+            n = it.get("count", 1)
+            # 实例留存被截断时明确标注, 避免把"留存数"误读成"处数"
+            return f"{n} ⚠" if it.get("truncated") else str(n)
         if key in ("measured", "required"):
             return _fmt_num(it.get(key))
         if key in ("x", "y"):
@@ -311,7 +318,7 @@ class IssueTable(QWidget):
         header = self.view.horizontalHeader()
         header.setStretchLastSection(True)
         header.setHighlightSections(False)
-        for i, (key, _t, width, _a) in enumerate(COLUMNS):
+        for i, (_key, _t, width, _a) in enumerate(COLUMNS):
             self.view.setColumnWidth(i, width)
             header.setSectionResizeMode(i, QHeaderView.Interactive)
         header.setSectionResizeMode(len(COLUMNS) - 1, QHeaderView.Stretch)

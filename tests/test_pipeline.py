@@ -4,11 +4,9 @@ import os
 import tempfile
 import unittest
 
-from tests.helpers import (ROOT, SAMPLE_JSON, SAMPLE_PARAMS, design, make_raw,
-                           write_gerber_set)
+from tests.helpers import (SAMPLE_JSON, SAMPLE_PARAMS, write_gerber_set)
 
 from dfm.core.pipeline import analyze, analyze_file, list_modules
-from dfm.core.rules_config import RulesConfig
 
 
 def base_cfg(**over):
@@ -97,8 +95,12 @@ class TestAnalyzeJson(unittest.TestCase):
 class TestModuleSelection(unittest.TestCase):
     def test_only_selected_modules_run(self):
         res = analyze(base_cfg(modules=["fabrication"]))
-        self.assertEqual(res["checks_run"], ["fabrication"])
-        self.assertTrue(all(it["module"] == "fabrication" for it in res["issues"]))
+        # data_quality 是"元检查"(报告判定覆盖率/数据缺口), 始终附加
+        self.assertEqual([c for c in res["checks_run"] if c != "data_quality"],
+                         ["fabrication"])
+        self.assertTrue(all(it["module"] in ("fabrication", "data_quality")
+                            for it in res["issues"]))
+        self.assertNotIn("netlist", res["checks_run"])
 
     def test_params_only_source(self):
         res = analyze({

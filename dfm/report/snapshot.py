@@ -51,6 +51,8 @@ def _iter_features(fab_data: List[dict]):
         elif d.get("kind") == "drill":
             for h in d.get("holes", []):
                 yield {"type": "hole", "x1": h.get("x"), "y1": h.get("y"),
+                       "x2": h.get("x2"), "y2": h.get("y2"),
+                       "is_slot": h.get("is_slot"),
                        "width": h.get("diameter_mm")}
 
 
@@ -87,15 +89,26 @@ def _draw_features(dr, fab_data, tx, ty, scale, wx0, wy0, wx1, wy1, max_items=20
         t = p.get("type")
         layer = p.get("layer", "")
         col = _layer_color(layer) if t != "hole" else (120, 120, 130)
+        # 负片图元用背景色绘制 (挖除效果), 避免 anti-pad 被画成铜箔
+        if p.get("clear") and t != "hole":
+            col = _BG
         if t in ("draw", "arc"):
             x2, y2 = p.get("x2", x1), p.get("y2", y1)
             w = max(1, int(round((p.get("width") or 0.1) * scale * 0.5)))
             dr.line([tx(x1), ty(y1), tx(x2), ty(y2)], fill=col, width=w)
             n += 1
-        elif t in ("flash", "hole"):
+        elif t == "hole":
             r = max(1.0, (p.get("width") or 0.3) / 2.0 * scale)
-            dr.ellipse([tx(x1) - r, ty(y1) - r, tx(x1) + r, ty(y1) + r],
-                       fill=col if t == "flash" else _BG, outline=col)
+            if p.get("is_slot") and p.get("x2") is not None:
+                w = max(1, int(round(r * 2)))
+                dr.line([tx(x1), ty(y1), tx(p["x2"]), ty(p["y2"])],
+                        fill=(120, 120, 130), width=w)
+            else:
+                dr.ellipse([tx(x1) - r, ty(y1) - r, tx(x1) + r, ty(y1) + r],
+                           fill=_BG, outline=col)
+            n += 1
+        elif t == "flash":
+            _draw_flash(dr, p, tx, ty, scale, col)
             n += 1
         elif t == "region":
             pts = p.get("points") or []
@@ -104,7 +117,51 @@ def _draw_features(dr, fab_data, tx, ty, scale, wx0, wy0, wx1, wy1, max_items=20
                 for (px, py) in pts:
                     coords.extend([tx(px), ty(py)])
                 dr.polygon(coords, fill=col)
+                for hole in p.get("holes") or []:
+                    if len(hole) >= 3:
+                        hcoords = []
+                        for (px, py) in hole:
+                            hcoords.extend([tx(px), ty(py)])
+                        dr.polygon(hcoords, fill=_BG)
                 n += 1
+
+
+def _draw_flash(dr, p, tx, ty, scale, col) -> None:
+    """按真实形状绘制焊盘 (圆/矩形/椭圆/多边形)。"""
+    x1, y1 = p["x1"], p["y1"]
+    shape = str(p.get("shape") or "").lower()
+    w = float(p.get("w") or p.get("width") or 0.0)
+    h = float(p.get("h") or p.get("width") or w or 0.0)
+    pts = p.get("points")
+    if (shape == "poly" or pts) and pts and len(pts) >= 3:
+        coords = []
+        for (px, py) in pts:
+            coords.extend([tx(px), ty(py)])
+        dr.polygon(coords, fill=col)
+        return
+    if shape in ("rect", "rectangle", "square") and w > 0:
+        hw, hh = w / 2.0 * scale, (h or w) / 2.0 * scale
+        cx, cy = tx(x1), ty(y1)
+        rot = float(p.get("rot") or 0.0)
+        if rot:
+            import math
+
+            a = math.radians(-rot)
+            ca, sa = math.cos(a), math.sin(a)
+            coords = []
+            for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
+                coords.extend([cx + dx * ca - dy * sa, cy + dx * sa + dy * ca])
+            dr.polygon(coords, fill=col)
+        else:
+            dr.rectangle([cx - hw, cy - hh, cx + hw, cy + hh], fill=col)
+        return
+    if shape in ("oval", "oblong", "roundrect", "ellipse") and w > 0:
+        hw, hh = w / 2.0 * scale, (h or w) / 2.0 * scale
+        cx, cy = tx(x1), ty(y1)
+        dr.ellipse([cx - hw, cy - hh, cx + hw, cy + hh], fill=col)
+        return
+    r = max(1.0, (w or h or float(p.get("width") or 0.3)) / 2.0 * scale)
+    dr.ellipse([tx(x1) - r, ty(y1) - r, tx(x1) + r, ty(y1) + r], fill=col)
 
 
 def _draw_marker(dr, tx, ty, x, y, rgb, size, cross=True):

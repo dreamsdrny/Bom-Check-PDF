@@ -4,10 +4,10 @@ import os
 import tempfile
 import unittest
 
-from tests.helpers import ROOT, SAMPLE_JSON, SAMPLE_PARAMS, design, write_gerber_set
+from tests.helpers import ROOT, SAMPLE_JSON, SAMPLE_PARAMS, write_gerber_set
 
 from dfm.core.source import (SOURCE_GERBER, SOURCE_JSON, SOURCE_ODB, detect_source_type,
-                             derive_params, load_source)
+                             load_source)
 
 
 class TestDetect(unittest.TestCase):
@@ -53,7 +53,7 @@ class TestLoadJsonSource(unittest.TestCase):
 
     def test_user_params_win_over_derived(self):
         src = load_source({"source_path": SAMPLE_JSON, "design_params": SAMPLE_PARAMS})
-        with open(SAMPLE_PARAMS, "r", encoding="utf-8-sig") as f:
+        with open(SAMPLE_PARAMS, encoding="utf-8-sig") as f:
             user = json.load(f)
         self.assertEqual(src.params["min_line_width"], user["min_line_width"])
 

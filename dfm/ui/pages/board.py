@@ -194,7 +194,7 @@ class BoardPage(BasePage):
             self.issue_list.addItem("(所有问题均无坐标定位)")
 
     def _all_layers(self, on: bool) -> None:
-        for name, row in self._layer_rows.items():
+        for row in self._layer_rows.values():
             row.set_checked(on)
         self.view.set_all_layers_visible(on)
 

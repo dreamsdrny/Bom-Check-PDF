@@ -27,7 +27,7 @@ def main() -> int:
         if len(args) < 2:
             print("用法: python evan_dfm.py viewer <analysis.json>")
             return 2
-        with open(args[1], "r", encoding="utf-8-sig") as f:
+        with open(args[1], encoding="utf-8-sig") as f:
             return run_viewer(json.load(f))
     from dfm.app import main as app_main
 

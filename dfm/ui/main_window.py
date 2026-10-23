@@ -11,14 +11,14 @@ import os
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow,
                                QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
                                QWidget)
 
 from dfm import __version__
-from dfm.branding import APP_NAME, win_title
-from dfm.core.capability import factory_label, factory_labels, list_factories, list_levels
+from dfm.branding import win_title
+from dfm.core.capability import factory_labels, list_factories, list_levels
 from dfm.ui.icons import app_icon, icon
 from dfm.ui.pages.analysis import AnalysisPage
 from dfm.ui.pages.base import BasePage
@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
         for page in self.pages.values():
             try:
                 page.on_analysis(analysis)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 import traceback
 
                 traceback.print_exc()
@@ -328,7 +328,7 @@ class MainWindow(QMainWindow):
         for page in self.pages.values():
             try:
                 page.on_rules_changed()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         self._refresh_top()
 
@@ -338,7 +338,7 @@ class MainWindow(QMainWindow):
             if page is not None and hasattr(page, "select_issue"):
                 try:
                     page.select_issue(index)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
     # ---------------- 其它 ----------------
@@ -354,7 +354,7 @@ class MainWindow(QMainWindow):
         if win.get("maximized"):
             self.showMaximized()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.state.set_setting("window", {
             "width": self.width(), "height": self.height(),
             "maximized": self.isMaximized(),

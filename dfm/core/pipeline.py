@@ -32,10 +32,13 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from dfm.core import registry
+from dfm.core.capability import DEFAULT_FACTORY
+from dfm.core.coverage import DataQuality, quality_issues
 from dfm.core.issue import (SEVERITY_ORDER, compute_risk_score, renumber_issues,
                             summarize_issues)
 from dfm.core.rules_config import RulesConfig, evaluate_custom_rules
 from dfm.core.source import SourceData, load_source
+from dfm.geom.board import BoardGeometry
 
 MAX_INSTANCES_IN_RESULT = 20000
 
@@ -60,7 +63,8 @@ def list_modules() -> List[dict]:
 
 
 def analyze(cfg: Dict[str, Any],
-            progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+            progress: Optional[Callable[[str], None]] = None,
+            on_step: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """执行一次完整 DFM 分析。
 
     :param cfg: 分析配置, 关键字段::
@@ -79,11 +83,15 @@ def analyze(cfg: Dict[str, Any],
         modules          启用的检查 id 列表 (缺省=全部已启用检查)
         rules_path       规则集 YAML 路径 (缺省按搜索路径查找)
         load_plugins     是否加载插件 (默认 True)
+        element_cap      几何元素上限 (默认 400000)
+        instance_cap     每规则留存实例上限 (默认 500)
         extracta         extracta.exe 路径 (BRD 源可选)
         customer/submitter/revision  报告元数据
 
-    :param progress: 进度回调 ``fn(message: str)``, 界面与 CLI 共用
+    :param progress: 文本进度回调 ``fn(message)``, 界面与 CLI 共用
+    :param on_step:  步骤回调 ``fn(done, total, message)``, 用于确定性进度条
     :return: analysis 字典
+    :raises RuntimeError: 数据源解析失败且无任何可用数据 (致命错误, 不静默通过)
     """
     def note(msg: str) -> None:
         if progress:
@@ -108,12 +116,19 @@ def analyze(cfg: Dict[str, Any],
     for w in src.warnings:
         note(f"    [提示] {w}")
 
+    # 致命错误: 声明了几何数据源却什么都没解析到 → 直接失败, 不产出"看似通过"的报告
+    if src.extras.get("source_error") and not src.has_design and not src.fab_data:
+        raise RuntimeError(
+            f"数据源解析失败: {src.extras['source_error']}\n"
+            f"路径: {src.path or '(未指定)'}  类型: {src.kind}\n"
+            "请确认文件格式/完整性; Allegro .brd 需本机 extracta 或改用 SKILL 导出 JSON。")
+
     # ---------- 2. 能力库 ----------
     from dfm.core.capability import (factory_label, level_label, load_capability,
                                      load_capability_db, normalize_factory,
                                      normalize_level)
 
-    factory = normalize_factory(cfg.get("factory") or "jlcpcb")
+    factory = normalize_factory(cfg.get("factory") or DEFAULT_FACTORY)
     board_type = str(cfg.get("board_type") or "rigid")
     level = normalize_level(cfg.get("capability_level") or "standard")
     copper_um = float(cfg.get("copper_um") or 35.0)
@@ -132,6 +147,8 @@ def analyze(cfg: Dict[str, Any],
             "factory": factory, "board_type": board_type, "capability_level": level,
             "copper_um": copper_um, "copper_oz": copper_oz,
             "board_thickness": cfg.get("board_thickness"),
+            "element_cap": cfg.get("element_cap"),
+            "instance_cap": cfg.get("instance_cap"),
         },
         progress=progress,
     )
@@ -143,6 +160,26 @@ def analyze(cfg: Dict[str, Any],
         else:
             ctx.extras.setdefault(key, value)
 
+    # 共享几何模型: 构建一次, 制造 DFM / 开短路 / 装配 全部复用
+    dq = DataQuality(source_kind=src.kind)
+    dq.add_notes(src.warnings)
+    if src.design is not None:
+        dq.add_notes(getattr(src.design, "parse_notes", None))
+    for layer in src.fab_data or []:
+        dq.add_notes(layer.get("notes"))
+    if src.design is not None or src.fab_data:
+        try:
+            geom = BoardGeometry(design=src.design, fab_data=src.fab_data,
+                                 element_cap=int(cfg.get("element_cap") or 400_000))
+            ctx.set_geometry(geom)
+            dq.add_geometry(geom)
+            note(f"    几何模型: {len(geom.elements)} 个铜箔元素 / "
+                 f"{len(geom.holes)} 个孔 / {len(geom.layers())} 层")
+        except Exception as exc:
+            dq.fatal.append(f"几何模型构建失败: {exc}")
+            note(f"    [ERROR] 几何模型构建失败: {exc}")
+
+    specs = list(registry.list_checks())
     requested = cfg.get("modules")
     requested = set(requested) if requested else None
     issues: List[dict] = []
@@ -150,10 +187,10 @@ def analyze(cfg: Dict[str, Any],
     checks_skipped: List[dict] = []
     errors: Dict[str, str] = {}
 
-    specs = registry.list_checks()
     total = len(specs)
     note(f"[3/4] 执行检查 ({total} 项已注册) ...")
-    for i, spec in enumerate(specs, start=1):
+    done = 0
+    for spec in specs:
         if requested is not None and spec.id not in requested:
             checks_skipped.append({"id": spec.id, "name": spec.name, "reason": "未勾选"})
             continue
@@ -165,13 +202,18 @@ def analyze(cfg: Dict[str, Any],
             checks_skipped.append({"id": spec.id, "name": spec.name,
                                    "reason": f"缺少数据: {', '.join(missing)}"})
             continue
-        note(f"    ({i}/{total}) {spec.name} [{spec.id}] ...")
+        done += 1
+        msg = f"({done}/{total}) {spec.name} [{spec.id}]"
+        note("    " + msg + " ...")
+        if on_step:
+            on_step(done, total, spec.name)
         try:
             produced = spec.run(ctx) or []
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             import traceback
             errors[f"{spec.id}_error"] = f"{exc}"
             ctx.extras.setdefault("check_errors", {})[spec.id] = traceback.format_exc()
+            dq.fatal.append(f"检查 {spec.id} 执行失败: {exc}")
             note(f"    [ERROR] {spec.name} 执行失败: {exc}")
             continue
         covered = ctx.extras.setdefault("geometry_rules", set())
@@ -194,6 +236,26 @@ def analyze(cfg: Dict[str, Any],
         if custom:
             checks_run.append("custom_rules")
             note(f"    自定义规则: {len(custom)} 项")
+
+    # ---------- 3c. 数据质量 / 判定覆盖率 ----------
+    for cov in ctx.coverage:
+        dq.add_coverage(cov)
+    for t in ctx.truncations:
+        dq.add_truncation(t)
+    geom_obj = getattr(ctx, "_geometry", None)
+    if geom_obj is not None:
+        for w in geom_obj.warnings:
+            dq.add_notes([w])
+    if dq.fatal:
+        for f in dq.fatal:
+            note(f"    [ERROR] {f}")
+    if rules.check_enabled("data_quality"):
+        for it in quality_issues(dq):
+            it.setdefault("module", "data_quality")
+            it.setdefault("check_name", "数据质量")
+            issues.append(it)
+        checks_run.append("data_quality")
+    note(f"    数据质量: {dq.summary_line()}")
 
     # ---------- 4. 汇总 ----------
     note("[4/4] 规则集改判 / 汇总评分 ...")
@@ -257,6 +319,8 @@ def analyze(cfg: Dict[str, Any],
         "modules_requested": sorted(requested) if requested else [s.id for s in specs],
         "plugins": plugins_report,
         "rules_source": rules.source,
+        "cost_model": rules.cost_model(),
+        "instance_cap": int(cfg.get("instance_cap") or 500),
         "errors": [it["description"] for it in critical],
         "warnings": [it["description"] for it in high],
         "error_count": len(critical),
@@ -264,7 +328,13 @@ def analyze(cfg: Dict[str, Any],
         "passed": len(critical) == 0,
         "source": {"type": src.kind, "path": src.path,
                    "fab_path": str(cfg.get("fab_path") or "")},
-        "notes": list(src.warnings),
+        "notes": list(src.warnings) + [n for n in dq.parse_notes
+                                       if n not in (src.warnings or [])],
+        "coverage": dq.coverage,
+        "coverage_ratio": round(dq.judged_ratio(), 3),
+        "missed_rules": dq.missed_rules(),
+        "data_quality": dq.as_dict(),
+        "geometry_summary": (geom_obj.summary() if geom_obj is not None else {}),
     }
     for key in ("netlist_summary", "fabnet_summary", "geometry_stats", "layer_stack",
                 "copper_layers", "gerber_meta", "fab_stats", "capability_items",
@@ -276,7 +346,7 @@ def analyze(cfg: Dict[str, Any],
     return result
 
 
-def analyze_file(path: str, factory: str = "jlcpcb", board_type: str = "rigid",
+def analyze_file(path: str, factory: str = DEFAULT_FACTORY, board_type: str = "rigid",
                  capability_level: str = "standard", copper_um: float = 35.0,
                  copper_oz: Optional[float] = None,
                  board_thickness: Optional[float] = None,
@@ -284,6 +354,7 @@ def analyze_file(path: str, factory: str = "jlcpcb", board_type: str = "rigid",
                  design_params: Any = None, modules: Optional[List[str]] = None,
                  rules_path: Optional[str] = None,
                  progress: Optional[Callable[[str], None]] = None,
+                 on_step: Optional[Callable[[int, int, str], None]] = None,
                  **extra: Any) -> Dict[str, Any]:
     """便捷入口: 直接对一个文件/目录做 DFM 分析。
 
@@ -310,10 +381,6 @@ def analyze_file(path: str, factory: str = "jlcpcb", board_type: str = "rigid",
     if kind in (SOURCE_GERBER, SOURCE_ODB) and not fab_path:
         cfg["fab_path"] = path
     cfg.update({k: v for k, v in extra.items() if v is not None})
-    return analyze(cfg, progress=progress)
+    return analyze(cfg, progress=progress, on_step=on_step)
 
 
-def run_hub(cfg: Dict[str, Any],
-            progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
-    """兼容旧名称, 等价于 :func:`analyze`。"""
-    return analyze(cfg, progress=progress)

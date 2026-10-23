@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import html as _html
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from dfm.core.issue import SEVERITY_COLOR
 
@@ -86,7 +86,6 @@ def render_board_svg(fab_data: List[dict],
     vx0, vy0 = minx - pad, miny - pad
     vw, vh = (maxx - minx) + 2 * pad, (maxy - miny) + 2 * pad
     height = max(120, int(width * vh / max(vw, 1e-6)))
-    scale = width / max(vw, 1e-6)
     r_marker = marker_radius or max(vw, vh) * 0.008
 
     parts: List[str] = [
@@ -109,28 +108,38 @@ def render_board_svg(fab_data: List[dict],
         if layer in hidden:
             continue
         color = layer_color(layer)
+        # 负片图元: 用背景色绘制 (挖除效果), 避免把 anti-pad 画成铜箔
+        is_clear = bool(p.get("clear"))
+        fill = BG if is_clear else color
+        opacity = "1" if is_clear else "0.95"
         t = p.get("type")
         if t in ("draw", "region_start", "arc"):
             if p.get("x1") is None or p.get("x2") is None:
                 continue
             w = p.get("width") or stroke_w
+            cap = "butt" if p.get("square_cap") else "round"
             parts.append(
                 f"<line x1='{p['x1']:.4f}' y1='{p['y1']:.4f}' x2='{p['x2']:.4f}' "
-                f"y2='{p['y2']:.4f}' stroke='{color}' stroke-width='{max(w, stroke_w * 0.4):.4f}' "
-                f"stroke-linecap='round' opacity='0.9'/>")
+                f"y2='{p['y2']:.4f}' stroke='{fill}' "
+                f"stroke-width='{max(w, stroke_w * 0.4):.4f}' "
+                f"stroke-linecap='{cap}' opacity='{opacity}'/>")
             count += 1
         elif t == "flash":
             if p.get("x1") is None:
                 continue
-            r = max((p.get("width") or 0.2) / 2.0, stroke_w * 0.5)
-            parts.append(f"<circle cx='{p['x1']:.4f}' cy='{p['y1']:.4f}' r='{r:.4f}' "
-                         f"fill='{color}' opacity='0.95'/>")
+            parts.append(_flash_svg(p, fill, opacity, stroke_w))
             count += 1
         elif t == "region":
             pts = p.get("points") or []
             if len(pts) >= 3:
                 d_path = "M " + " L ".join(f"{q[0]:.4f} {q[1]:.4f}" for q in pts) + " Z"
-                parts.append(f"<path d='{d_path}' fill='{color}' fill-opacity='0.45' "
+                for hole in p.get("holes") or []:
+                    if len(hole) >= 3:
+                        d_path += (" M " + " L ".join(f"{q[0]:.4f} {q[1]:.4f}"
+                                                      for q in hole) + " Z")
+                fill_rule = " fill-rule='evenodd'" if p.get("holes") else ""
+                parts.append(f"<path d='{d_path}' fill='{fill}' "
+                             f"fill-opacity='{'1' if is_clear else '0.45'}'{fill_rule} "
                              f"stroke='none'/>")
                 count += 1
 
@@ -141,6 +150,13 @@ def render_board_svg(fab_data: List[dict],
             if h.get("x") is None:
                 continue
             r = max((h.get("diameter_mm") or 0.3) / 2.0, stroke_w * 0.4)
+            if h.get("is_slot") and h.get("x2") is not None:
+                # 槽孔: 以线段 + 圆头端帽绘制
+                parts.append(
+                    f"<line x1='{h['x']:.4f}' y1='{h['y']:.4f}' x2='{h['x2']:.4f}' "
+                    f"y2='{h['y2']:.4f}' stroke='{HOLE_EDGE}' "
+                    f"stroke-width='{2 * r:.4f}' stroke-linecap='round'/>")
+                continue
             parts.append(f"<circle cx='{h['x']:.4f}' cy='{h['y']:.4f}' r='{r:.4f}' "
                          f"fill='{HOLE_FILL}' stroke='{HOLE_EDGE}' "
                          f"stroke-width='{stroke_w * 0.6:.4f}'/>")
@@ -167,6 +183,32 @@ def render_board_svg(fab_data: List[dict],
                      f"font-family='Segoe UI'>{_html.escape(title)}</text>")
     parts.append("</svg>")
     return "".join(parts)
+
+
+def _flash_svg(p: dict, fill: str, opacity: str, stroke_w: float) -> str:
+    """按真实形状渲染一个焊盘闪点 (圆/矩形/椭圆/多边形, 支持旋转)。"""
+    x, y = float(p["x1"]), float(p["y1"])
+    shape = str(p.get("shape") or "").lower()
+    w = float(p.get("w") or p.get("width") or 0.0)
+    h = float(p.get("h") or p.get("width") or w or 0.0)
+    rot = float(p.get("rot") or 0.0)
+    min_dim = max(min(w, h) if min(w, h) > 0 else max(w, h), stroke_w)
+
+    pts = p.get("points")
+    if (shape == "poly" or pts) and pts and len(pts) >= 3:
+        d_path = "M " + " L ".join(f"{q[0]:.4f} {q[1]:.4f}" for q in pts) + " Z"
+        return f"<path d='{d_path}' fill='{fill}' opacity='{opacity}'/>"
+    if shape in ("rect", "rectangle", "square") and w > 0:
+        transform = f" transform='rotate({-rot:.3f} {x:.4f} {y:.4f})'" if rot else ""
+        return (f"<rect x='{x - w / 2:.4f}' y='{y - h / 2:.4f}' width='{w:.4f}' "
+                f"height='{h:.4f}' fill='{fill}' opacity='{opacity}'{transform}/>")
+    if shape in ("oval", "oblong", "roundrect", "ellipse") and w > 0:
+        transform = f" transform='rotate({-rot:.3f} {x:.4f} {y:.4f})'" if rot else ""
+        return (f"<ellipse cx='{x:.4f}' cy='{y:.4f}' rx='{w / 2:.4f}' ry='{h / 2:.4f}' "
+                f"fill='{fill}' opacity='{opacity}'{transform}/>")
+    r = max(min_dim / 2.0, stroke_w * 0.5)
+    return (f"<circle cx='{x:.4f}' cy='{y:.4f}' r='{r:.4f}' fill='{fill}' "
+            f"opacity='{opacity}'/>")
 
 
 def legend_items(fab_data: List[dict], hidden: Optional[Iterable[str]] = None) -> List[dict]:

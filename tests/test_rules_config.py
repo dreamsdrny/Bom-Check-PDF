@@ -5,7 +5,7 @@ import unittest
 
 import yaml
 
-from tests.helpers import ROOT  # noqa: F401
+from tests.helpers import ROOT
 
 from dfm.core.issue import make_issue
 from dfm.core.rules_config import (DEFAULT_CONFIG, RulesConfig, evaluate_custom_rules,

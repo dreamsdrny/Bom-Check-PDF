@@ -3,20 +3,17 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
+from PySide6.QtWidgets import (QDoubleSpinBox, QFileDialog, QGridLayout,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QScrollArea,
-                               QSpinBox, QFrame, QVBoxLayout, QWidget)
+                               QFrame, QVBoxLayout, QWidget)
 
-from dfm.core.capability import (capability_file, factory_labels, list_board_types,
-                                 list_factories, list_levels)
+from dfm.core.capability import (capability_file, factory_labels, list_factories, list_levels)
 from dfm.core.source import SOURCE_LABELS, SOURCE_TYPES, detect_source_type
 from dfm.ui.pages.base import BasePage
-from dfm.ui.theme import colors
-from dfm.ui.widgets.common import (Card, LogView, PathRow, button, combo, muted,
-                                   safe_float)
+from dfm.ui.widgets.common import Card, LogView, PathRow, button, combo, muted
 from dfm.ui.workers import TaskWorker
 
 TYPE_ITEMS = [("自动识别", "")] + [(SOURCE_LABELS[t], t) for t in SOURCE_TYPES]

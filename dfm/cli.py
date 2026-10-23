@@ -97,6 +97,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                f"低 {summary.get('低', 0)})")
         _print(f"  可制造性评分: {risk.get('score')}/100   风险等级: {risk.get('risk_level')}")
         _print(f"  结论: {risk.get('verdict')}")
+        dq = result.get("data_quality") or {}
+        if dq:
+            _print(f"  判定覆盖率: {dq.get('规则判定覆盖率', '-')}   "
+                   f"未判定规则: {dq.get('未判定规则数', 0)} 项   "
+                   f"解析提示: {dq.get('解析提示数', 0)} 条")
+            missed = dq.get("未判定规则") or []
+            if missed and not args.brief:
+                _print(f"    未判定: {', '.join(str(m) for m in missed[:10])}"
+                       + (" ..." if len(missed) > 10 else ""))
+            for t in (dq.get("截断") or [])[:3]:
+                _print(f"    [截断] {t}")
+            for f in (dq.get("致命问题") or [])[:3]:
+                _print(f"    [致命] {f}")
         _print("-" * 78)
         limit = args.limit or 0
         for i, it in enumerate(result["issues"], 1):
@@ -208,7 +221,7 @@ def cmd_rules(args: argparse.Namespace) -> int:
                 from dfm.core.capability import list_board_types, list_levels
                 levels = "; ".join(f"{bt}[{','.join(list_levels(bt, factory=fid))}]"
                                    for bt in list_board_types(fid))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             _print(f"    {fid:<12} {labels.get(fid, fid):<14} {levels}")
             _print(f"                 {path}")
@@ -243,7 +256,7 @@ def cmd_rules(args: argparse.Namespace) -> int:
             return 2
         _print(path)
         if args.open:
-            os.startfile(path)  # noqa: S606
+            os.startfile(path)
         return 0
 
     _print("[ERROR] 未知 rules 动作")
@@ -304,8 +317,8 @@ def cmd_version(_args: argparse.Namespace) -> int:
     _print(f"  用户数据   {paths.user_data_dir(create=False)}")
     _print(f"  板厂能力库 {len(list_factories())} 家: {', '.join(list_factories())}")
     _print(f"  内置检查   {len(registry.builtin_checks())} 项")
-    for name, ok in (("PySide6", "PySide6"), ("openpyxl", "openpyxl"),
-                     ("PyYAML", "yaml"), ("Pillow", "PIL")):
+    for name, ok in (("PySide6", "PySide6"), ("shapely", "shapely"),
+                     ("openpyxl", "openpyxl"), ("PyYAML", "yaml"), ("Pillow", "PIL")):
         try:
             __import__(ok)
             _print(f"  {name:<10} 已安装")
@@ -415,7 +428,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:
         _print("\n[已取消]")
         return 130
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         import traceback
         _print(f"[ERROR] {exc}")
         if os.environ.get("DFM_DEBUG"):
@@ -426,19 +439,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def run_default(parser: argparse.ArgumentParser) -> int:
-    """无子命令时: 有图形环境则启动界面, 否则打印帮助。"""
-    if sys.stdout.isatty() and os.environ.get("DISPLAY", "1") and _has_gui():
+    """无子命令时: 具备图形环境则启动界面, 否则打印帮助。"""
+    if _has_gui() and not os.environ.get("DFM_NO_GUI"):
         return cmd_gui(argparse.Namespace(page=None))
     parser.print_help()
     return 0
 
 
 def _has_gui() -> bool:
+    """是否具备启动 GUI 的条件 (PySide6 可用且非无头环境)。"""
     try:
         import PySide6  # noqa: F401
-        return True
     except ImportError:
         return False
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return False
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") \
+            and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
+    return True
 
 
 if __name__ == "__main__":

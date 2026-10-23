@@ -1,0 +1,46 @@
+# Evan DFM — ruff 配置
+# 运行: ruff check .    /    ruff format --diff .
+line-length = 100
+target-version = "py39"
+
+extend-exclude = [
+    "build",
+    "dist",
+    "output",
+    "docs",
+    "plugins/_sample_check.py",   # 示例插件 (故意保留教学式写法)
+]
+
+[lint]
+# 聚焦"真实缺陷"类规则, 不做大规模风格改写:
+#   F=pyflakes(未用导入/变量/未定义名) E/W=pycodestyle E9=语法级
+#   B=bugbear(闭包捕获循环变量/可变默认值/裸except等) C4=推导式
+#   SIM=可简化写法  RUF100=失效的 noqa
+# 说明: 不启用 UP(类型注解现代化) 与 I(导入排序) —— 全库改写收益低、diff 噪声大;
+#       如需统一风格可单独运行 `ruff check --select I,UP --fix`。
+select = ["F", "E9", "B", "C4", "SIM", "RUF100", "E7"]
+ignore = [
+    "E501",    # 行宽由 formatter 控制 (中文注释常超宽)
+    "E702",    # 分号多语句: 解析器状态机里成对赋值更直观
+    "E731",    # lambda 赋值: Qt 回调与表格取值器场景更简洁
+    "E741",    # 允许 l/I/O 变量名 (层名循环等)
+    "B008",    # Qt 模型默认参数 QModelIndex() 是框架固定写法
+    "B007",    # 允许未使用的循环变量 (enumerate 占位)
+    "SIM102",  # 嵌套 if 带中文注释时比合并条件更易读
+    "SIM105",  # contextlib.suppress 改写会降低中文注释可读性
+    "SIM108",  # 表达式求值器里 if/else 比三元更清晰
+    "SIM115",  # 测试里显式 open 便于断言
+    "SIM212",  # 三元正/反写法均可读
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["B011", "SIM300"]
+"dfm/ui/*" = ["N802", "B006"]      # Qt 槽函数命名 (closeEvent 等) 由框架决定
+"dfm/report/writers.py" = ["C901"] # Excel 报告构建函数较长, 拆分收益低于风险
+
+[lint.mccabe]
+max-complexity = 18
+
+[format]
+quote-style = "double"
+line-ending = "lf"

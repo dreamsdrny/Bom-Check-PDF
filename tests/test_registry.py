@@ -4,10 +4,9 @@ import shutil
 import tempfile
 import unittest
 
-from tests.helpers import design  # noqa: F401
+from tests.helpers import design
 
 from dfm.core import registry
-from dfm.core.issue import make_issue
 from dfm.core.rules_config import RulesConfig
 
 PLUGIN_SRC = '''"""测试插件"""

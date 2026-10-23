@@ -31,11 +31,11 @@ import importlib.util
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from dfm import paths
-from dfm.core.issue import make_issue  # noqa: F401  (供插件 import 便利)
+from dfm.core.issue import make_issue
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,32 @@ class CheckContext:
         #: 各检查写入的附加统计 (会合并进 analysis 结果)
         self.extras: Dict[str, Any] = {}
         self.issues: List[dict] = []
+        self._geometry = None
+        self.coverage: List[Any] = []
+        self.truncations: List[str] = []
+
+    # ---- 共享几何模型 (构建一次, 多检查复用) ----
+    @property
+    def geometry(self):
+        """共享的 :class:`dfm.geom.board.BoardGeometry` (惰性构建并缓存)。"""
+        if self._geometry is None:
+            from dfm.geom.board import BoardGeometry
+
+            self._geometry = BoardGeometry(design=self.design, fab_data=self.fab_data)
+        return self._geometry
+
+    def set_geometry(self, geom) -> None:
+        self._geometry = geom
+
+    def set_coverage(self, cov) -> None:
+        """记录本检查的规则覆盖情况 (供数据质量报告)。"""
+        if cov is not None:
+            self.coverage.append(cov)
+
+    def add_truncation(self, text: str) -> None:
+        """记录"实例留存被截断"等信息 (处数仍按真实计数报告)。"""
+        if text and text not in self.truncations:
+            self.truncations.append(text)
 
     # ---- 便捷访问 ----
     @property
@@ -117,7 +143,7 @@ class CheckContext:
         if self._progress:
             try:
                 self._progress(msg)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def add(self, issue: dict) -> dict:
@@ -219,7 +245,7 @@ def list_checks() -> List[CheckSpec]:
 def builtin_checks() -> List[CheckSpec]:
     return [c for c in list_checks() if c.source == "builtin"]
 
-
+#定义plugin_checks函数，返回所有非内置检查项
 def plugin_checks() -> List[CheckSpec]:
     return [c for c in list_checks() if c.source != "builtin"]
 
@@ -241,7 +267,7 @@ def load_builtin_checks(force: bool = False) -> None:
             continue
         try:
             importlib.import_module(name)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("内置检查模块加载失败: %s (%s)", name, exc)
 
 
@@ -258,7 +284,6 @@ def load_plugins(dirs: Optional[Iterable[str]] = None,
 
     返回加载报告 ``[{name, path, status, checks, error}]``, 供界面展示。
     """
-    import importlib
 
     load_builtin_checks()
     report: List[Dict[str, Any]] = []
@@ -292,7 +317,7 @@ def _load_plugin_file(path: str, name: str, force: bool) -> Dict[str, Any]:
         spec.loader.exec_module(module)
         if hasattr(module, "register"):
             module.register()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         sys.modules.pop(mod_name, None)
         logger.exception("插件加载失败: %s", path)
         return {"name": name, "path": path, "status": "error", "checks": [],

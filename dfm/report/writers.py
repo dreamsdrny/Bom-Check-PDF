@@ -20,9 +20,10 @@ import os
 import shutil
 import tempfile
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import openpyxl
+from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -31,6 +32,13 @@ from dfm.core.issue import SEVERITY_LEVELS, SEVERITY_COLOR
 FONT = "Microsoft YaHei"
 
 # 严重度 -> 潜在损失估算 (相对值, 仅供排序/参考)
+#: 「潜在损失」默认权重 — **仅作排序参考, 默认关闭**。
+#: 金额无统一出处, 直接给客户报告有风险; 需要时在规则集 ``cost`` 段启用并自定义::
+#:
+#:     cost:
+#:       enabled: true
+#:       currency: CNY
+#:       by_severity: {危险: 2000, 高: 800, 中: 300, 低: 50, 关闭: 0}
 LOSS_BY_SEV = {"危险": 2000, "高": 800, "中": 300, "低": 50, "关闭": 0}
 SEVERITY_DESC = {
     "危险": "停产 / 可靠性影响",
@@ -89,14 +97,14 @@ def _prepare_images(analysis: dict, tmpdir: str) -> dict:
         return imgs
     try:
         from dfm.report.snapshot import render_overview_png, render_crop_png, _collect_bbox
-    except Exception:  # noqa: BLE001  (无 Pillow 等)
+    except Exception:
         return imgs
     issues = analysis.get("issues", [])
     try:
         imgs["overview"] = render_overview_png(
             fab, [it for it in analysis.get("instances", issues) if it.get("x") is not None],
             os.path.join(tmpdir, "overview.png"), width=560)
-    except Exception:  # noqa: BLE001
+    except Exception:
         imgs["overview"] = None
     bbox = _collect_bbox(fab)
     if bbox:
@@ -111,7 +119,7 @@ def _prepare_images(analysis: dict, tmpdir: str) -> dict:
             imgs["crops"][idx] = render_crop_png(
                 fab, it["x"], it["y"], os.path.join(tmpdir, f"crop_{idx}.png"),
                 half_span_mm=half, size=320)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return imgs
 
@@ -126,7 +134,7 @@ def _embed(ws, path, anchor, px):
         xi.height = px
         ws.add_image(xi, anchor)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -336,11 +344,14 @@ def generate_dfm_excel(analysis: dict, output_path: str,
     ws2.row_dimensions[start].height = 28
 
     total_loss = 0
+    cost_enabled = bool((analysis.get("cost_model") or {}).get("enabled", False))
+    loss_table = dict(LOSS_BY_SEV)
+    loss_table.update((analysis.get("cost_model") or {}).get("by_severity") or {})
     for idx, it in enumerate(issues, 1):
         r = start + idx
         sev = it.get("severity", "")
         cnt = it.get("count", 1) or 1
-        loss = LOSS_BY_SEV.get(sev, 0)
+        loss = loss_table.get(sev, 0) if cost_enabled else 0
         subtotal = loss * cnt
         total_loss += subtotal
         detail_sheet = f"Issue{idx}"
@@ -359,7 +370,13 @@ def generate_dfm_excel(analysis: dict, output_path: str,
             ws2.row_dimensions[r].height = 30
         ws2.cell(row=r, column=4, value=it.get("description", ""))
         ws2.cell(row=r, column=5, value=it.get("suggestion", ""))
-        ws2.cell(row=r, column=6, value=cnt)
+        # 数量: 真实处数; 若实例留存被截断, 标注留存数 (旧实现把留存数当处数, 会少报)
+        cnt_cell = ws2.cell(row=r, column=6, value=cnt)
+        if it.get("truncated"):
+            cnt_cell.comment = Comment(
+                f"实际 {cnt} 处, 因超出留存上限仅记录 {it.get('instance_cap', '')} 处坐标",
+                "Evan DFM")
+            cnt_cell.font = Font(name=FONT, size=10, bold=True, color="C00000")
         sev_cell = ws2.cell(row=r, column=7, value=sev)
         sev_cell.fill = PatternFill("solid", fgColor=SEVERITY_COLOR.get(sev, "FFFFFF"))
         sev_cell.font = Font(name=FONT, size=10, bold=True)
@@ -442,6 +459,88 @@ def generate_dfm_excel(analysis: dict, output_path: str,
         nr = max(r, r2) + 2
         ws3.cell(row=nr, column=2, value="制程能力备注").font = section_font
         _write_kv(ws3, nr + 1, 2, list(notes.items()), border=border)
+
+    # ==================== 数据质量 / 判定覆盖率 ====================
+    dq = analysis.get("data_quality") or {}
+    coverage = analysis.get("coverage") or []
+    if dq or coverage:
+        wsq = wb.create_sheet("数据质量")
+        wsq.sheet_view.showGridLines = False
+        for col, w in (("A", 3), ("B", 26), ("C", 60), ("D", 22)):
+            wsq.column_dimensions[col].width = w
+        wsq.merge_cells("B1:D1")
+        wsq["B1"] = "数据质量与判定覆盖率"
+        wsq["B1"].font = title_font
+        wsq["B2"] = ("本页说明「哪些规则真的判过、哪些没判、解析是否有损」。"
+                     "「未发现问题」不等于「已判定合格」。")
+        wsq["B2"].font = sub_font
+        rq = 4
+        wsq.cell(row=rq, column=2, value="项目").font = section_font
+        wsq.cell(row=rq, column=3, value="内容").font = section_font
+        style_header_row(wsq, rq, 2, 3)
+        rq += 1
+        for key in ("数据源", "规则判定覆盖率", "未判定规则数", "负片(clear)图元",
+                    "被挖除铜箔", "解析提示数", "截断", "致命问题"):
+            val = dq.get(key)
+            if val in (None, "", [], {}):
+                continue
+            wsq.cell(row=rq, column=2, value=key).border = border
+            cell = wsq.cell(row=rq, column=3, value=_fmt(val))
+            cell.border = border
+            cell.alignment = top_wrap
+            for c in (2, 3):
+                wsq.cell(row=rq, column=c).font = base_font
+            rq += 1
+
+        geo = dq.get("几何统计") or {}
+        if geo:
+            rq += 1
+            wsq.cell(row=rq, column=2, value="几何模型").font = section_font
+            rq += 1
+            for k, v in geo.items():
+                wsq.cell(row=rq, column=2, value=k).border = border
+                wsq.cell(row=rq, column=3, value=_fmt(v)).border = border
+                for c in (2, 3):
+                    wsq.cell(row=rq, column=c).font = base_font
+                rq += 1
+
+        parse_notes = dq.get("解析提示") or []
+        if parse_notes:
+            rq += 1
+            wsq.cell(row=rq, column=2, value="解析提示明细").font = section_font
+            rq += 1
+            for n in parse_notes:
+                cell = wsq.cell(row=rq, column=3, value=str(n))
+                cell.alignment = top_wrap
+                cell.font = base_font
+                rq += 1
+
+        missed = dq.get("未判定规则") or []
+        if missed:
+            rq += 1
+            wsq.cell(row=rq, column=2, value="未判定规则 (能力库缺项/数据不足)").font = section_font
+            rq += 1
+            for m in missed:
+                wsq.cell(row=rq, column=3, value=str(m)).font = base_font
+                rq += 1
+
+        if coverage:
+            rq += 1
+            wsq.cell(row=rq, column=2, value="各检查覆盖率").font = section_font
+            wsq.cell(row=rq, column=3, value="已判定 / 未判定").font = section_font
+            wsq.cell(row=rq, column=4, value="覆盖率").font = section_font
+            style_header_row(wsq, rq, 2, 4)
+            rq += 1
+            for c in coverage:
+                wsq.cell(row=rq, column=2, value=str(c.get("check", ""))).border = border
+                wsq.cell(row=rq, column=3,
+                         value=f"{c.get('judged_count', 0)} / {c.get('missed_count', 0)}").border = border
+                pc = wsq.cell(row=rq, column=4, value=f"{c.get('ratio', 0) * 100:.0f}%")
+                pc.border = border
+                pc.alignment = center
+                for cc in (2, 3, 4):
+                    wsq.cell(row=rq, column=cc).font = base_font
+                rq += 1
 
     # ==================== 开短路 / 网表测试 ====================
     nl = analysis.get("netlist_summary")
@@ -605,8 +704,10 @@ def generate_dfm_text(analysis: dict, output_path: str,
     issues = analysis.get("issues", [])
     risk = analysis.get("risk", {})
     lines = []
+    from dfm.branding import APP_NAME
+
     lines.append("=" * 70)
-    lines.append("  DFM 制程能力分析报告   (Asher_DFM, 参考 Valor)")
+    lines.append(f"  DFM 制程能力分析报告   ({APP_NAME}, 参考 Valor)")
     lines.append("=" * 70)
     lines.append(f"  板厂: {analysis.get('factory_label','')}    "
                  f"板类型: {analysis.get('board_type_label','')}    "
@@ -634,6 +735,9 @@ def generate_dfm_text(analysis: dict, output_path: str,
             lines.append(f"        {it.get('description','')}")
             if it.get("measured") is not None or it.get("required") is not None:
                 lines.append(f"        测量值={_fmt(it.get('measured'))}  规则值={_fmt(it.get('required'))}")
+            if it.get("truncated"):
+                lines.append(f"        处数={it.get('count', 1)} (坐标留存 "
+                             f"{it.get('instance_cap', '-')} 处, 已截断)")
             if it.get("x") is not None and it.get("y") is not None:
                 loc = f"        位置: X={_fmt(it.get('x'))}mm  Y={_fmt(it.get('y'))}mm"
                 if it.get("layer"):
@@ -645,6 +749,32 @@ def generate_dfm_text(analysis: dict, output_path: str,
     else:
         lines.append("")
         lines.append("  未发现 DFM 问题。")
+
+    # ---- 数据质量 / 判定覆盖率 (与 Excel、HTML、CLI 一致) ----
+    dq = analysis.get("data_quality") or {}
+    if dq:
+        lines.append("")
+        lines.append("-" * 70)
+        lines.append("  数据质量与判定覆盖率:")
+        lines.append(f"    规则判定覆盖率    {dq.get('规则判定覆盖率', '-')}")
+        lines.append(f"    未判定规则数      {dq.get('未判定规则数', 0)}")
+        lines.append(f"    负片(clear)图元   {_fmt(dq.get('负片(clear)图元'))}")
+        lines.append(f"    解析提示          {dq.get('解析提示数', 0)} 条")
+        missed = dq.get("未判定规则") or []
+        if missed:
+            lines.append("    未判定规则 (能力库缺项/数据不足, 「未发现问题」≠「已判定合格」):")
+            for m in missed[:20]:
+                name = m.get("rule", m) if isinstance(m, dict) else m
+                reason = m.get("reason", "") if isinstance(m, dict) else ""
+                lines.append(f"      - {name}" + (f"  ({reason})" if reason else ""))
+            if len(missed) > 20:
+                lines.append(f"      ... 其余 {len(missed) - 20} 项见 Excel/HTML 报告")
+        for t in (dq.get("截断") or [])[:5]:
+            lines.append(f"    [截断] {t}")
+        for f in (dq.get("致命问题") or [])[:5]:
+            lines.append(f"    [致命] {f}")
+        for n in (dq.get("解析提示") or [])[:10]:
+            lines.append(f"    [解析] {n}")
 
     nl = analysis.get("netlist_summary")
     if nl:

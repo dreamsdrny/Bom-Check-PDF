@@ -5,19 +5,17 @@
 """
 from __future__ import annotations
 
-import math
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen,
-                           QPixmap, QTextCharFormat)
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-                               QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox,
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextCharFormat
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QPlainTextEdit, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from dfm.ui.icons import icon, logo_pixmap, pixmap
-from dfm.ui.theme import SEVERITY_COLORS, colors, score_object_name
+from dfm.ui.theme import SEVERITY_COLORS, colors
 
 
 # ============================================================
@@ -35,13 +33,13 @@ class Card(QFrame):
         outer.setSpacing(10)
         self.header = QHBoxLayout()
         self.header.setSpacing(8)
-        self.title_label = QLabel(title)
+        self.title_label = QLabel(title, self)
         self.title_label.setObjectName("CardTitle")
-        self.hint_label = QLabel(hint)
+        self.hint_label = QLabel(hint, self)
         self.hint_label.setObjectName("CardHint")
-        self.hint_label.setVisible(bool(hint))
         self.header.addWidget(self.title_label)
         self.header.addWidget(self.hint_label, 1)
+        self.hint_label.setVisible(bool(hint))
         outer.addLayout(self.header)
         self.body = QVBoxLayout()
         self.body.setContentsMargins(0, 0, 0, 0)
@@ -138,38 +136,6 @@ class PathRow(QWidget):
         self.edit.setText(value or "")
 
 
-class FieldRow(QWidget):
-    """标签 + 任意输入控件 (QLineEdit / QComboBox / QSpinBox ...)"""
-
-    def __init__(self, label: str, widget: QWidget, hint: str = "",
-                 parent: Optional[QWidget] = None, label_width: int = 96):
-        super().__init__(parent)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
-        lab = QLabel(label)
-        lab.setObjectName("Dim")
-        lab.setFixedWidth(label_width)
-        lay.addWidget(lab)
-        lay.addWidget(widget, 1)
-        if hint:
-            h = QLabel(hint)
-            h.setObjectName("Muted")
-            lay.addWidget(h)
-        self.widget = widget
-
-    def value(self) -> Any:
-        w = self.widget
-        if isinstance(w, QComboBox):
-            return w.currentData() if w.currentData() is not None else w.currentText()
-        if isinstance(w, (QSpinBox, QDoubleSpinBox)):
-            return w.value()
-        if isinstance(w, QCheckBox):
-            return w.isChecked()
-        if isinstance(w, QLineEdit):
-            return w.text().strip()
-        return None
-
 
 def combo(items: Sequence[Any], current: Any = None, width: int = 0) -> QComboBox:
     """items 可为 [(显示文本, 数据), ...] 或 [文本, ...]"""
@@ -230,7 +196,7 @@ class StatCard(QFrame):
             self._color = color
             self.value_label.setStyleSheet(f"color:{color};")
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, event) -> None:
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -279,7 +245,7 @@ class ScoreGauge(QWidget):
         return QColor({"危险": c["danger"], "高": SEVERITY_COLORS["高"],
                        "中": c["warn"], "低": c["ok"]}.get(self._risk, c["ok"]))
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         c = colors()
@@ -452,79 +418,6 @@ def stat_row(cards: List[StatCard]) -> QWidget:
     return host
 
 
-def format_mm(value: Any) -> str:
-    if value is None:
-        return "—"
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{float(value):.3f}".rstrip("0").rstrip(".")
-    return str(value)
 
 
-def arc_path(cx: float, cy: float, r: float, start_deg: float, end_deg: float) -> QPainterPath:
-    """构造圆弧路径 (自绘图表用)。"""
-    from PySide6.QtCore import QRectF
 
-    path = QPainterPath()
-    rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-    path.arcMoveTo(rect, start_deg)
-    path.arcTo(rect, start_deg, end_deg - start_deg)
-    return path
-
-
-def donut_segments(summary: Dict[str, int]) -> List[Dict[str, Any]]:
-    """把分级统计转成环形图分段数据 [{severity, value, ratio, color}]"""
-    total = int(summary.get("总计") or 0)
-    out = []
-    if not total:
-        return out
-    for sev in ("危险", "高", "中", "低", "关闭"):
-        n = int(summary.get(sev) or 0)
-        if not n:
-            continue
-        out.append({"severity": sev, "value": n, "ratio": n / total,
-                    "color": SEVERITY_COLORS.get(sev, "#8b8d98")})
-    return out
-
-
-class RatioBar(QWidget):
-    """比例条 (覆盖率/利用率等指标), ratio ∈ [0,1]。"""
-
-    def __init__(self, ratio: float = 0.0, color: str = "", height: int = 6,
-                 parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._ratio = max(0.0, min(1.0, float(ratio or 0.0)))
-        self._color = color
-        self.setFixedHeight(height)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-    def set_ratio(self, ratio: float, color: str = "") -> None:
-        self._ratio = max(0.0, min(1.0, float(ratio or 0.0)))
-        if color:
-            self._color = color
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        c = colors()
-        h = self.height()
-        r = h / 2.0
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(c["bg_alt"]))
-        p.drawRoundedRect(0, 0, self.width(), h, r, r)
-        w = int(self.width() * self._ratio)
-        if w > 0:
-            p.setBrush(QColor(self._color or c["accent"]))
-            p.drawRoundedRect(0, 0, max(w, h), h, r, r)
-        p.end()
-
-
-def safe_float(text: Any, default: Optional[float] = None) -> Optional[float]:
-    try:
-        s = str(text).strip()
-        if not s:
-            return default
-        v = float(s)
-        return default if math.isnan(v) else v
-    except (TypeError, ValueError):
-        return default

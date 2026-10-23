@@ -38,10 +38,27 @@ class TestGerberParse(unittest.TestCase):
     def test_parse_excellon(self):
         res = parse_excellon(self.paths["drill"])
         self.assertEqual(res["kind"], "drill")
-        self.assertEqual(len(res["holes"]), 3)
+        self.assertEqual(len(res["holes"]), 4)          # 3 圆孔 + 1 槽孔
         diameters = sorted(round(h["diameter_mm"], 3) for h in res["holes"])
-        self.assertEqual(diameters, [0.15, 0.3, 0.3])
+        self.assertEqual(diameters, [0.15, 0.3, 0.3, 0.8])
         self.assertEqual(res["plating"], "PTH")
+        slots = [h for h in res["holes"] if h.get("is_slot")]
+        self.assertEqual(len(slots), 1)                  # G85 槽孔被识别
+        self.assertEqual(res["slot_count"], 1)
+        self.assertAlmostEqual(slots[0]["length_mm"], 4.0, places=3)
+        self.assertEqual(res["tools"][1]["hit_count"], 2)
+
+    def test_excellon_repeat_and_tool_table(self):
+        from tests.helpers import DRILL_REPEAT
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "repeat.drl")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(DRILL_REPEAT)
+            res = parse_excellon(p)
+            self.assertEqual(len(res["holes"]), 4)       # R04 → 4 个孔
+            self.assertEqual(res["repeat_count"], 3)
+            self.assertAlmostEqual(res["holes"][0]["diameter_mm"], 0.25)
 
     def test_read_fab_data_directory(self):
         data = read_fab_data(self.tmp)
@@ -52,7 +69,7 @@ class TestGerberParse(unittest.TestCase):
     def test_summarize_and_integrity(self):
         data = read_fab_data(self.tmp)
         stats = summarize_fab(data)
-        self.assertEqual(stats["hole_count"], 3)
+        self.assertEqual(stats["hole_count"], 4)          # 含 1 个槽孔
         self.assertTrue(stats["gerber_layers"])
         issues = integrity_check(data)
         self.assertIsInstance(issues, list)
@@ -65,7 +82,7 @@ class TestGerberParse(unittest.TestCase):
         self.assertIn("data", result)
         self.assertIn("issues", result)
         self.assertIn("stats", result)
-        self.assertEqual(result["stats"]["hole_count"], 3)
+        self.assertEqual(result["stats"]["hole_count"], 4)
 
 
 class TestNetlistCompare(unittest.TestCase):

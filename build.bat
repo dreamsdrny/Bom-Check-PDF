@@ -33,9 +33,9 @@ if errorlevel 1 goto :fail
 
 echo.
 echo ============================================================
-echo  打包完成: dist\EvanDFM.exe
+echo  打包完成: dist\DFM.exe
 echo ============================================================
-if "%1"=="run" start "" "dist\EvanDFM.exe"
+if "%1"=="run" start "" "dist\DFM.exe"
 goto :eof
 
 :clean

@@ -1,11 +1,11 @@
 """结果页: 问题清单 + 明细 + 分级统计, 与版图页双向联动。"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QScrollArea, QSplitter, QVBoxLayout,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QListWidget,
+                               QListWidgetItem, QSplitter, QVBoxLayout,
                                QWidget)
 
 from dfm.ui.pages.base import BasePage
@@ -149,6 +149,50 @@ class ResultsPage(BasePage):
         self.detail_lay.addWidget(muted("在上方表格中单击一行查看明细, 双击直接定位到版图。"))
         self.locations.clear()
         self.set_status(f"问题 {summary.get('总计', 0)} 项 · 评分 {risk.get('score')}/100")
+        self._show_quality(analysis)
+
+    def _show_quality(self, analysis: Dict[str, Any]) -> None:
+        """数据质量与判定覆盖率提示 (让"没检查"显式可见)。"""
+        for w in getattr(self, "_quality_widgets", []):
+            w.deleteLater()
+        self._quality_widgets = []
+
+        dq = analysis.get("data_quality") or {}
+        missed = dq.get("未判定规则") or []
+        trunc = dq.get("截断") or []
+        fatal = dq.get("致命问题") or []
+        if not (missed or trunc or fatal):
+            return
+        host = QWidget()
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        if fatal:
+            lay.addWidget(self._banner("致命: " + "; ".join(str(f) for f in fatal[:2]),
+                                       SEVERITY_COLORS["危险"]))
+        if missed:
+            names = ", ".join(str(m.get("rule", m) if isinstance(m, dict) else m)
+                              for m in missed[:8])
+            more = f" 等 {len(missed)} 项" if len(missed) > 8 else ""
+            lay.addWidget(self._banner(
+                f"判定覆盖率 {dq.get('规则判定覆盖率', '—')}：{names}{more} 本次**未判定**"
+                f"（能力库缺项/数据不足）。「未发现问题」≠「已判定合格」。",
+                SEVERITY_COLORS["中"]))
+        if trunc:
+            lay.addWidget(self._banner("数据量截断: " + "; ".join(str(t) for t in trunc[:2]),
+                                       SEVERITY_COLORS["高"]))
+        self.root.insertWidget(1, host)
+        self._quality_widgets.append(host)
+
+    def _banner(self, text: str, color: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lab.setStyleSheet(
+            f"background:{colors()['panel_alt']};border:1px solid {color};"
+            f"border-left:4px solid {color};border-radius:8px;padding:8px 12px;"
+            f"color:{colors()['fg']};")
+        return lab
 
     def on_show(self) -> None:
         if self.state.analysis:
@@ -234,7 +278,8 @@ class ResultsPage(BasePage):
         self._current = index
         self._locate()
 
-    def _on_location_double(self, item: QListWidgetItem) -> None:
+    def _on_location_double(self, _item: QListWidgetItem) -> None:
+        """双击定位点 → 跳到版图页 (选中项已通过 issue_selected 同步)。"""
         self.navigate("board")
 
     def _locate(self) -> None:

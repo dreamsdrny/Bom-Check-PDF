@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -47,13 +46,12 @@ def set_windows_app_id() -> None:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
 def create_app(theme: Optional[str] = None):
     """创建 QApplication 并套用主题/图标/字体。"""
-    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from dfm.ui.icons import app_icon
@@ -86,69 +84,10 @@ def run_gui(page: Optional[str] = None) -> int:
 
 
 def run_viewer(analysis: Dict[str, Any], page: Optional[str] = None) -> int:
-    """独立的版图交叉定位窗口 (CLI --view 用)。"""
-    setup_logging()
-    set_windows_app_id()
+    """独立的版图交叉定位窗口 (CLI --view 用); 实现见 dfm.ui.viewer。"""
+    from dfm.ui.viewer import run_viewer as _run
 
-    from PySide6.QtWidgets import (QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                                   QMainWindow, QSplitter, QVBoxLayout, QWidget)
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor
-
-    from dfm.ui.theme import SEVERITY_COLORS
-    from dfm.ui.widgets.board_view import BoardView
-    from dfm.ui.widgets.common import button
-
-    app = create_app("dark")
-    win = QMainWindow()
-    win.setWindowTitle(f"{APP_NAME} — 版图交叉定位")
-    win.resize(1280, 820)
-
-    central = QWidget()
-    lay = QVBoxLayout(central)
-    lay.setContentsMargins(10, 10, 10, 10)
-    meta = analysis.get("board_meta") or {}
-    risk = analysis.get("risk") or {}
-    head = QLabel(f"{meta.get('board_name', '')}   评分 {risk.get('score', '-')}/100 "
-                  f"({risk.get('risk_level', '-')})   问题 "
-                  f"{(analysis.get('issue_summary') or {}).get('总计', 0)} 项")
-    lay.addWidget(head)
-
-    split = QSplitter(Qt.Horizontal)
-    lay.addWidget(split, 1)
-    issues = analysis.get("issues") or []
-    lst = QListWidget()
-    for i, it in enumerate(issues):
-        if it.get("x") is None:
-            continue
-        item = QListWidgetItem(f"[{it.get('severity')}] {it.get('code')} "
-                               f"{it.get('rule')} @({it['x']:.2f},{it['y']:.2f})")
-        item.setData(Qt.UserRole, i)
-        item.setForeground(QColor(SEVERITY_COLORS.get(it.get("severity"), "#8b8d98")))
-        lst.addItem(item)
-    view = BoardView()
-    view.set_board(analysis.get("fab_data") or [], issues)
-    split.addWidget(lst)
-    split.addWidget(view)
-    split.setSizes([340, 900])
-
-    def on_item(item):
-        idx = item.data(Qt.UserRole)
-        if idx is not None:
-            view.select_issue(int(idx))
-
-    lst.itemClicked.connect(on_item)
-    view.issue_clicked.connect(lambda idx: [
-        lst.setCurrentItem(lst.item(r)) for r in range(lst.count())
-        if lst.item(r).data(Qt.UserRole) == idx])
-
-    bar = QHBoxLayout()
-    bar.addWidget(button("适应窗口", "fit", "", view.fit))
-    bar.addStretch(1)
-    lay.addLayout(bar)
-    win.setCentralWidget(central)
-    win.show()
-    return app.exec()
+    return _run(analysis)
 
 
 def main() -> int:

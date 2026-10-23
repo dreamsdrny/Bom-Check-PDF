@@ -36,6 +36,19 @@ scoring:
     低: 0.5
     关闭: 0.0
 
+# ---------------- 潜在损失估算 (默认关闭) ----------------
+# 报告中的「潜在损失(估)」列。金额没有统一出处, 对外报告慎用;
+# 需要时按公司口径启用并自定义各级别权重 (单位由 currency 标注, 仅用于排序参考)。
+cost:
+  enabled: false
+  currency: CNY
+  by_severity:
+    危险: 2000
+    高: 800
+    中: 300
+    低: 50
+    关闭: 0
+
 # ---------------- 检查项开关 ----------------
 # id 对应 `python -m dfm checks` 列出的检查 (含插件)。
 checks:
@@ -47,6 +60,7 @@ checks:
   capability:     { enabled: true }   # 制程能力比对 (参数化)
   fabnet:         { enabled: true }   # CAD vs FAB 网络比对
   netclass:       { enabled: true }   # 网络分类 / 阻抗需求
+  data_quality:   { enabled: true }   # 数据质量与判定覆盖率提示 (元检查)
   custom_rules:   { enabled: true }   # 下方 custom_rules 声明式规则
 
 # ---------------- 装配 / SMT 阈值 ----------------

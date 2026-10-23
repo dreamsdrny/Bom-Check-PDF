@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
+from dfm.geom.measure import measure_design
 from dfm.io.brd_model import BrdDesign, load_brd_export, to_fab_data
 
 SOURCE_BRD = "brd"
@@ -98,7 +99,7 @@ def detect_source_type(path: str) -> str:
 
 
 def _load_json(path: str) -> Any:
-    with open(path, "r", encoding="utf-8-sig") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -115,11 +116,15 @@ def _base_name(path: str) -> str:
 # 参数派生: 从几何模型量出可比较的设计参数
 # ============================================================
 def derive_params(design: Optional[BrdDesign],
-                  fab_stats: Optional[dict] = None) -> Dict[str, Any]:
+                  fab_stats: Optional[dict] = None,
+                  rules=None) -> Dict[str, Any]:
     """从设计模型量测设计参数 (供制程能力比对)。
 
     只计算代价低的量 (线宽/孔径/孔环/板厚/层数/器件与焊盘统计);
     间距类由几何检查直接判定并定位, 不在此重复计算。
+
+    :param rules: 规则集 (用于读取 ``assembly.fiducial_names`` 等配置,
+                  保证量测口径与装配检查一致)
     """
     params: Dict[str, Any] = {}
     stats = fab_stats or {}
@@ -175,85 +180,18 @@ def derive_params(design: Optional[BrdDesign],
         params["smd_count"] = sum(1 for p in design.pads if p.get("is_smd"))
         params["tht_count"] = max(0, len(design.pads) - params["smd_count"])
         params["pin_count"] = len(design.pads)
-        params["component_to_edge"] = _min_component_to_edge(design)
-        params["min_component_spacing"] = _min_component_spacing(design)
-        params["fiducial_count_top"], params["fiducial_count_bottom"] = _count_fiducials(design)
         params["_sides"] = sorted(s for s in sides if s)
+
+    # 装配类量测: 与 dfm.checks.assembly **共用同一实现**, 保证 Info 页数值
+    # 与问题清单结论一致 (旧实现两处各写一套, 结果互相矛盾)
+    fid_names = None
+    if rules is not None:
+        try:
+            fid_names = rules.param("assembly", "fiducial_names", None)
+        except Exception:
+            fid_names = None
+    params.update(measure_design(design, fid_names))
     return {k: v for k, v in params.items() if v is not None}
-
-
-def _min_component_to_edge(design: BrdDesign) -> Optional[float]:
-    poly = design.outline or []
-    if len(poly) < 3 or not design.components:
-        return None
-    from dfm.io.brd_model import point_poly_edge_dist
-
-    best: Optional[float] = None
-    for c in design.components:
-        if c.get("x") is None:
-            continue
-        d, _cx, _cy = point_poly_edge_dist(c["x"], c["y"], poly)
-        if best is None or d < best:
-            best = d
-    return round(best, 4) if best is not None else None
-
-
-def _min_component_spacing(design: BrdDesign) -> Optional[float]:
-    """器件本体最小间距 (用器件焊盘包围盒近似本体)"""
-    boxes = _component_boxes(design)
-    if len(boxes) < 2:
-        return None
-    best: Optional[float] = None
-    n = len(boxes)
-    for i in range(n):
-        for j in range(i + 1, min(n, i + 40)):      # 邻近窗口, 避免 O(n^2) 爆炸
-            d = _box_gap(boxes[i], boxes[j])
-            if best is None or d < best:
-                best = d
-    return round(best, 4) if best is not None else None
-
-
-def _component_boxes(design: BrdDesign) -> List[Dict[str, Any]]:
-    """按 refdes 汇总焊盘包围盒, 作为器件本体近似。"""
-    acc: Dict[str, List[float]] = {}
-    for p in design.pads:
-        if not p.get("refdes") or p.get("x") is None:
-            continue
-        w = (p.get("pad_w") or 0.2) / 2.0
-        h = (p.get("pad_h") or 0.2) / 2.0
-        b = acc.setdefault(p["refdes"], [p["x"], p["y"], p["x"], p["y"], 0])
-        b[0] = min(b[0], p["x"] - w)
-        b[1] = min(b[1], p["y"] - h)
-        b[2] = max(b[2], p["x"] + w)
-        b[3] = max(b[3], p["y"] + h)
-        b[4] += 1
-    out = []
-    for ref, (x0, y0, x1, y1, npad) in acc.items():
-        if npad < 2:
-            continue
-        out.append({"refdes": ref, "x0": x0, "y0": y0, "x1": x1, "y1": y1,
-                    "cx": (x0 + x1) / 2.0, "cy": (y0 + y1) / 2.0, "pins": npad})
-    out.sort(key=lambda b: b["cx"])
-    return out
-
-
-def _box_gap(a: dict, b: dict) -> float:
-    dx = max(0.0, max(a["x0"], b["x0"]) - min(a["x1"], b["x1"]))
-    dy = max(0.0, max(a["y0"], b["y0"]) - min(a["y1"], b["y1"]))
-    return (dx * dx + dy * dy) ** 0.5
-
-
-def _count_fiducials(design: BrdDesign, names=("FID", "MARK", "FP", "BENCH")) -> tuple:
-    top = bot = 0
-    for c in design.components or []:
-        ref = str(c.get("refdes", "")).upper()
-        if not any(k in ref for k in names):
-            continue
-        if str(c.get("side", "")).lower() in ("bottom", "bot", "b"):
-            bot += 1
-        else:
-            top += 1
-    return top, bot
 
 
 # ============================================================
@@ -324,11 +262,20 @@ def load_source(cfg: Dict[str, Any],
 
     cfg 关键字段: ``source_type`` / ``source_path`` / ``fab_path`` /
     ``cad_nets`` / ``design_params`` / ``board_thickness`` / ``extracta`` /
-    ``workdir`` / ``json_out``。
+    ``workdir`` / ``json_out`` / ``rules_path``。
     """
     def note(msg: str) -> None:
         if progress:
             progress(msg)
+
+    # 规则集: 量测口径 (如基准点位号关键字) 需与检查保持一致
+    rules = None
+    try:
+        from dfm.core.rules_config import RulesConfig
+
+        rules = RulesConfig.load(cfg.get("rules_path"))
+    except Exception:
+        rules = None
 
     src = SourceData()
     path = str(cfg.get("source_path") or "")
@@ -348,7 +295,7 @@ def load_source(cfg: Dict[str, Any],
             loaded = _load_json(dp)
             if isinstance(loaded, dict):
                 src.params.update(loaded)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             src.warnings.append(f"设计参数 JSON 读取失败: {exc}")
     elif isinstance(dp, dict):
         src.params.update(dp)
@@ -358,7 +305,7 @@ def load_source(cfg: Dict[str, Any],
         try:
             from dfm.io.fab import normalize_cad_nets
             src.cad_nets = normalize_cad_nets(_load_json(cad))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             src.warnings.append(f"CAD 网表 JSON 读取失败: {exc}")
     elif isinstance(cad, dict):
         from dfm.io.fab import normalize_cad_nets
@@ -384,7 +331,7 @@ def load_source(cfg: Dict[str, Any],
                 raise RuntimeError("未指定 Gerber / ODB++ 路径")
             note(f"解析制造数据: {_base_name(str(target))} ...")
             _load_fab_into(src, target, thickness, note)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         src.warnings.append(f"{kind} 数据源解析失败: {exc}")
         src.extras["source_error"] = str(exc)
 
@@ -393,11 +340,11 @@ def load_source(cfg: Dict[str, Any],
         try:
             note(f"解析制造数据: {_base_name(str(fab_path))} ...")
             _load_fab_into(src, fab_path, thickness, note, keep_design=False)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             src.warnings.append(f"制造数据解析失败: {exc}")
 
     # ---- 派生参数 (人工填写的板厚/参数优先于自动量测) ----
-    derived = derive_params(src.design, src.fab_stats)
+    derived = derive_params(src.design, src.fab_stats, rules)
     if thickness is not None:
         derived["board_thickness"] = float(thickness)
         if src.design is not None and src.design.thickness_mm is None:

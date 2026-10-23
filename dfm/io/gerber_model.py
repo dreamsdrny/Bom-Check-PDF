@@ -100,18 +100,28 @@ def identify_layer(data: dict) -> dict:
     return {"kind": KIND_OTHER, "side": "", "index": None, "name": name, "source": "unknown"}
 
 
-def _ap_size_mm(data: dict, code) -> Tuple[float, float]:
-    """光圈尺寸 (mm): 从 %ADD 定义取, 兼容 inch/mm"""
-    ap = (data.get("apertures") or {}).get(code)
-    scale = INCH_TO_MM if data.get("unit") == "inch" else 1.0
-    if not ap:
-        return 0.2, 0.2
-    params = [p for p in (ap.get("params") or []) if isinstance(p, (int, float))]
-    if not params:
-        return 0.2, 0.2
-    w = params[0] * scale
-    h = (params[1] * scale) if len(params) > 1 and ap.get("shape") in ("R", "O") else w
-    return w, h
+def _flash_dims(p: dict, data: dict) -> Tuple[float, float, str, float, list]:
+    """闪点(pad)真实尺寸: 优先用解析器给出的 shape/w/h/rot/points。
+
+    返回 ``(w, h, shape, rot, points)``; 无法确定时退化为 0.2mm 圆。
+    """
+    shape = str(p.get("shape") or "").lower()
+    w = p.get("w")
+    h = p.get("h")
+    rot = float(p.get("rot") or 0.0)
+    pts = p.get("points") or []
+    if w is None:
+        ap = (data.get("apertures") or {}).get(p.get("aperture"))
+        if ap:
+            w = ap.get("w") or (ap.get("params") or [None])[0]
+            h = h if h is not None else ap.get("h")
+            shape = shape or {"C": "circle", "R": "rect", "O": "oval",
+                              "P": "poly", "AM": "poly"}.get(str(ap.get("shape")), "")
+    if w is None:
+        w = p.get("width") or 0.2
+    if h is None:
+        h = w
+    return float(w or 0.2), float(h or w or 0.2), shape or "circle", rot, list(pts)
 
 
 def _arc_poly(p: dict, seg: int = 16) -> List[Tuple[float, float]]:
@@ -137,38 +147,50 @@ def _arc_poly(p: dict, seg: int = 16) -> List[Tuple[float, float]]:
 
 
 def _normalize_layers(fab_data: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """把 Gerber/ODB++ 统一为 (层列表, 钻孔列表)"""
+    """把 Gerber/ODB++ 统一为 (层列表, 钻孔列表)。
+
+    ODB++ 经 :func:`dfm.io.odbpp.parse_job` + ``flatten_odb_job`` 后, 每层已是独立
+    数据项 (``kind='odbpp'``, 带 ``layer_kind``/``odb_type``), 与 Gerber 同构处理。
+    """
     layers: List[dict] = []
     drills: List[dict] = []
     for d in fab_data or []:
         kind = d.get("kind")
-        if kind == "gerber":
-            info = identify_layer(d)
+        if kind in ("gerber", "odbpp"):
+            if kind == "gerber":
+                info = identify_layer(d)
+            else:
+                otype = str(d.get("odb_type") or "").lower()
+                lkind = d.get("layer_kind") or ODB_TYPE_MAP.get(otype, KIND_OTHER)
+                if lkind == KIND_DRILL:
+                    for f in d.get("features") or []:
+                        if f.get("type") == "flash" and f.get("x1") is not None:
+                            dia = max(f.get("w") or 0.0, f.get("h") or 0.0) or None
+                            drills.append({"x": f["x1"], "y": f["y1"], "d": dia,
+                                           "plating": "unknown"})
+                    continue
+                name = str(d.get("name") or "")
+                low = name.lower()
+                side = ("top" if "top" in low or "+top" in low
+                        else ("bottom" if "bot" in low else "inner"))
+                idx = None
+                m = re.search(r"l(\d+)", low)
+                if m:
+                    idx = int(m.group(1))
+                info = {"kind": lkind, "side": side, "index": idx,
+                        "name": name, "source": "odb-matrix"}
             layers.append({"info": info, "data": d,
-                           "prims": d.get("primitives") or []})
+                           "prims": d.get("primitives") or d.get("features") or []})
         elif kind == "drill":
             for h in d.get("holes", []):
                 if h.get("x") is None:
                     continue
-                drills.append({"x": h["x"], "y": h["y"], "d": h.get("diameter_mm"),
-                               "plating": h.get("plating") or d.get("plating") or "unknown"})
-        elif kind == "odbpp":
-            lmap = {str(l.get("name")): str(l.get("type", "")) for l in (d.get("layers") or [])}
-            by_layer: Dict[str, List[dict]] = defaultdict(list)
-            for f in d.get("features") or []:
-                by_layer[str(f.get("layer", ""))].append(f)
-            for lname, prims in by_layer.items():
-                otype = lmap.get(lname, "")
-                k = ODB_TYPE_MAP.get(otype.lower(), KIND_COPPER if otype.lower() in ("signal", "power_ground") else KIND_OTHER)
-                side = "top" if "top" in lname.lower() else ("bottom" if "bot" in lname.lower() else "inner")
-                if k == KIND_DRILL:
-                    for f in prims:
-                        if f.get("type") == "flash" and f.get("x1") is not None:
-                            drills.append({"x": f["x1"], "y": f["y1"], "d": None, "plating": "PTH"})
-                    continue
-                layers.append({"info": {"kind": k, "side": side, "index": None,
-                                        "name": lname, "source": "odb-matrix"},
-                               "data": d, "prims": prims})
+                entry = {"x": h["x"], "y": h["y"], "d": h.get("diameter_mm"),
+                         "plating": h.get("plating") or d.get("plating") or "unknown"}
+                if h.get("is_slot"):
+                    entry.update({"is_slot": True, "x2": h.get("x2"), "y2": h.get("y2"),
+                                  "length_mm": h.get("length_mm")})
+                drills.append(entry)
     return layers, drills
 
 
@@ -282,10 +304,10 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
     els: List[dict] = []
     has_x2_net = False
 
-    def push_cline(net, layer, width, pts):
+    def push_cline(net, layer, width, pts, polarity="dark"):
         if len(pts) < 2:
             return None
-        c = {"net": net or "", "layer": layer, "width": width,
+        c = {"net": net or "", "layer": layer, "width": width, "polarity": polarity,
              "points": [[round(x, 4), round(y, 4)] for x, y in pts]}
         clines.append(c)
         return c
@@ -314,15 +336,17 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
                 if p.get("x1") is None:
                     continue
                 w = p.get("width") or 0.0
+                pol = "clear" if p.get("clear") else "dark"
                 if cur and cur["net"] == net and cur["layer"] == lname and \
+                        cur.get("polarity") == pol and \
                         abs(cur["width"] - w) < 1e-9 and cur["pts"] and \
                         abs(cur["pts"][-1][0] - p["x1"]) < 1e-6 and abs(cur["pts"][-1][1] - p["y1"]) < 1e-6:
                     cur["pts"].append((p["x2"], p["y2"]))
                 else:
                     flush_cur()
-                    cur = {"net": net, "layer": lname, "width": w,
+                    cur = {"net": net, "layer": lname, "width": w, "polarity": pol,
                            "pts": [(p["x1"], p["y1"]), (p["x2"], p["y2"])]}
-                if is_copper:
+                if is_copper and pol == "dark":
                     r = (w or 0.0) / 2.0
                     els.append({"x1": p["x1"], "y1": p["y1"], "x2": p["x2"], "y2": p["y2"],
                                 "r": r, "layer": lname, "net": net, "kind": "seg", "cl": cur,
@@ -332,8 +356,9 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
                 pts = _arc_poly(p)
                 if pts:
                     flush_cur()
-                    ac = push_cline(net, lname, p.get("width") or 0.0, pts)
-                    if is_copper:
+                    ac = push_cline(net, lname, p.get("width") or 0.0, pts,
+                                    polarity="clear" if p.get("clear") else "dark")
+                    if is_copper and not p.get("clear"):
                         r = (p.get("width") or 0.0) / 2.0
                         for i2 in range(len(pts) - 1):
                             x1, y1 = pts[i2]
@@ -346,29 +371,34 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
                 pts = p.get("points") or []
                 flush_cur()
                 if len(pts) >= 3:
-                    closed = list(pts) + [pts[0]]
-                    rc = push_cline(net, lname, 0.0, closed)
+                    pol = "clear" if p.get("clear") else "dark"
                     xs = [q[0] for q in pts]
                     ys = [q[1] for q in pts]
-                    shapes.append({"net": net, "layer": lname,
+                    shapes.append({"net": net, "layer": lname, "polarity": pol,
+                                   "points": [[round(q[0], 4), round(q[1], 4)] for q in pts],
+                                   "holes": [[[round(q[0], 4), round(q[1], 4)] for q in hole]
+                                             for hole in (p.get("holes") or [])],
                                    "bbox": [min(xs), min(ys), max(xs), max(ys)]})
-                    if is_copper:
+                    if is_copper and pol == "dark":
                         for i2 in range(len(pts) - 1):
                             x1, y1 = pts[i2]
                             x2, y2 = pts[i2 + 1]
                             els.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "r": 0.0,
-                                        "layer": lname, "net": net, "kind": "seg", "cl": rc,
+                                        "layer": lname, "net": net, "kind": "seg", "cl": None,
                                         "minx": min(x1, x2), "maxx": max(x1, x2),
                                         "miny": min(y1, y2), "maxy": max(y1, y2)})
             elif t == "flash":
                 if p.get("x1") is None:
                     continue
-                w, h = _ap_size_mm(data, p.get("aperture"))
+                w, h, shape, rot, poly_pts = _flash_dims(p, data)
+                pol = "clear" if p.get("clear") else "dark"
                 rec = {"x": p["x1"], "y": p["y1"], "w": w, "h": h, "net": net,
-                       "layer": lname, "refdes": p.get("refdes") or "", "pin": p.get("pin") or "",
-                       "is_copper": is_copper}
+                       "shape": shape, "rot": rot, "points": poly_pts,
+                       "polarity": pol,
+                       "layer": lname, "refdes": p.get("refdes") or "",
+                       "pin": p.get("pin") or "", "is_copper": is_copper}
                 flashes.append(rec)
-                if is_copper:
+                if is_copper and pol == "dark":
                     r = max(w, h) / 2.0
                     els.append({"x1": p["x1"], "y1": p["y1"], "x2": p["x1"], "y2": p["y1"],
                                 "r": r, "layer": lname, "net": net, "kind": "pad",
@@ -407,7 +437,7 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
             if e.get("flash") is not None:
                 e["flash"]["net"] = nm
 
-    # 钻孔 ↔ 焊盘匹配 → vias / pads
+    # 钻孔 ↔ 焊盘匹配 → vias / pads (槽孔保留起止点)
     tol = 0.05
     used_flash = set()
     first_cu = coppers[0]["layer_name"] if coppers else "TOP"
@@ -416,7 +446,7 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
         hx, hy, hd = hole["x"], hole["y"], hole.get("d")
         matched = []
         for fi, fl in enumerate(flashes):
-            if not fl["is_copper"] or fi in used_flash:
+            if not fl["is_copper"] or fi in used_flash or fl.get("polarity") == "clear":
                 continue
             if abs(fl["x"] - hx) <= tol and abs(fl["y"] - hy) <= tol:
                 matched.append((fi, fl))
@@ -427,17 +457,32 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
             used_flash.add(fi)
             pads.append({"refdes": fl["refdes"], "pin": fl["pin"], "net": fl["net"] or net,
                          "x": fl["x"], "y": fl["y"], "layer": fl["layer"], "padstack": "",
-                         "is_smd": False, "pad_w": fl["w"], "pad_h": fl["h"], "drill_mm": hd})
+                         "is_smd": False, "pad_w": fl["w"], "pad_h": fl["h"], "drill_mm": hd,
+                         "pad_shape": fl.get("shape") or "circle",
+                         "pad_rot": fl.get("rot") or 0.0,
+                         "points": fl.get("points") or None,
+                         "polarity": fl.get("polarity") or "dark"})
         plated = str(hole.get("plating") or "").upper()
-        vias.append({"net": net, "x": hx, "y": hy, "drill_mm": hd, "pad_mm": pad_mm,
-                     "padstack": "", "start_layer": first_cu, "end_layer": last_cu,
-                     "type": "npth" if plated == "NPTH" else "through"})
+        via = {"net": net, "x": hx, "y": hy, "drill_mm": hd, "pad_mm": pad_mm,
+               "padstack": "", "start_layer": first_cu, "end_layer": last_cu,
+               "type": "npth" if plated == "NPTH" else "through",
+               "is_slot": bool(hole.get("is_slot"))}
+        if hole.get("is_slot") and hole.get("x2") is not None:
+            via["x2"] = hole["x2"]
+            via["y2"] = hole["y2"]
+            via["slot_length_mm"] = hole.get("length_mm")
+        vias.append(via)
     for fi, fl in enumerate(flashes):
         if fi in used_flash or not fl["is_copper"]:
             continue
         pads.append({"refdes": fl["refdes"], "pin": fl["pin"], "net": fl["net"],
                      "x": fl["x"], "y": fl["y"], "layer": fl["layer"], "padstack": "",
-                     "is_smd": True, "pad_w": fl["w"], "pad_h": fl["h"], "drill_mm": None})
+                     "is_smd": True, "pad_w": fl["w"], "pad_h": fl["h"], "drill_mm": None,
+                     "pad_shape": fl.get("shape") or "circle",
+                     "pad_rot": fl.get("rot") or 0.0,
+                     "points": fl.get("points") or None,
+                     "polarity": fl.get("polarity") or "dark",
+                     "is_testpoint": str(fl.get("feat_type", "")).upper() == "TEST"})
 
     # 网络与节点
     nets: Dict[str, List[dict]] = defaultdict(list)
@@ -457,11 +502,29 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
         if i < len(coppers) - 1:
             stackup.append({"layer": "", "type": "dielectric"})
 
+    # 器件 (仅 ODB++ components 文件提供) 与测试点
+    components: List[dict] = []
+    for L in layers:
+        for c in (L.get("data") or {}).get("components") or []:
+            if c not in components:
+                components.append(c)
+    testpoints = [{"net": p.get("net", ""), "refdes": p.get("refdes", ""),
+                   "pin": p.get("pin", ""), "x": p["x"], "y": p["y"],
+                   "layer": p.get("layer", ""),
+                   "pad_mm": min(p.get("pad_w") or 0, p.get("pad_h") or 0) or None}
+                  for p in pads if p.get("is_testpoint") and p.get("x") is not None]
+
+    parse_notes: List[str] = []
+    for d in fab_data or []:
+        for n in d.get("notes") or []:
+            if n not in parse_notes:
+                parse_notes.append(n)
+
     return {
         "format": "gerber",
         "units": "mm",
         "source_units": "mm",
-        "tool": "Gerber/ODB++ (Evan_DFM adapter)",
+        "tool": "Gerber/ODB++ (Evan DFM adapter)",
         "board": {
             "name": board_name or "Gerber",
             "revision": "",
@@ -472,16 +535,17 @@ def build_design_dict(fab_data: List[dict], board_thickness: Optional[float] = N
         "outline": [[round(x, 4), round(y, 4)] for x, y in (outline or [])],
         "stackup": stackup,
         "nets": [{"name": k, "nodes": v} for k, v in nets.items()],
-        "components": [],
+        "components": components,
         "clines": clines,
         "vias": vias,
         "pads": pads,
         "shapes": shapes,
-        "testpoints": [],
+        "testpoints": testpoints,
         "drc": [],
         "connectivity_source": "x2" if has_x2_net else "derived",
         "opens": [],
         "net_avg_width_mm": {},
+        "parse_notes": parse_notes,
         "etch_width_is_average": False,
         "gerber_meta": {
             "copper_layers": [L["layer_name"] for L in coppers],

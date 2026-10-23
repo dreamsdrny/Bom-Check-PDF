@@ -1,30 +1,38 @@
 """
-制造数据读取与完整性检查 (Gerber / ODB++ / NC Drill)
+制造数据读取与完整性检查 (Gerber / ODB++ / NC Drill / 压缩包)
 =============================================================
-支持:
-  1. Gerber RS-274X 解析 (单位/格式/光圈/D01-D03/G02-G03/G36-G37/X2属性)
-  2. Excellon NC Drill 解析 (孔径工具表/坐标/镀通孔判别)
-  3. ODB++ (job 目录: matrix / layers/*/features / netlists/cadnet/netlist) 解析
-  4. 制造数据完整性检查 (图层缺失/图形畸变风险/坐标偏移/孔径定义错误/网络属性缺失)
-  5. 网络表双向比对 (CAD vs FAB -> 开路 Open / 短路 Short)
+本模块是**统一入口与业务层**; 各格式的具体解析实现见:
+
+  :mod:`dfm.io.gerber`    Gerber RS-274X (宏光圈/阵列/极性/真实焊盘形状/X2 属性)
+  :mod:`dfm.io.excellon`  Excellon 钻孔 (刀具表/重复孔/G85 与 M15-M16 槽孔)
+  :mod:`dfm.io.odbpp`     ODB++ 作业 (matrix/符号表/铺铜 surface/阵列/netlist/components,
+                          支持 gzip 与 tgz/tar/zip 自动解包)
+  :mod:`dfm.io.aperture`  光圈与光圈宏模型 (含表达式求值)
+
+本模块负责:
+  1. :func:`read_fab_data` 统一读取 (文件/目录/列表/压缩包)
+  2. :func:`integrity_check` 制造数据完整性检查
+  3. :func:`collect_fab_nets` / :func:`compare_netlists` CAD vs FAB 网表比对
+  4. :func:`summarize_fab` / :func:`analyze_fab` 统计与汇总
+  5. :func:`fab_to_design` 转为统一设计模型 (供几何/装配/开短路检查复用)
 
 输出:
-  - fab_data: 统一的几何/统计数据结构 (供 DFM 报告与图形交叉定位使用)
-  - issues:   与 dfm.core.issue 一致的 DFM 问题结构 (code/severity/measured/x/y/...)
-  - 网络比对报告: {net_only_cad, net_only_fab, node_open, node_short, matched, ...}
-
-说明: 解析为 best-effort, 覆盖生产常见写法; 复杂宏/嵌套区域按近似处理。
+  - fab_data: 统一的层数据列表 (kind = gerber | odbpp | drill), 供判定、报告与版图渲染
+  - issues:   与 :mod:`dfm.core.issue` 一致的 DFM 问题结构
 """
 import logging
 import os
 import re
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from dfm.core.issue import make_issue
+from dfm.io import excellon as _excellon
+from dfm.io import gerber as _gerber
+from dfm.io import odbpp as _odbpp
 
 logger = logging.getLogger(__name__)
 
-MIL_TO_MM = 0.0254
 INCH_TO_MM = 25.4
 
 INTEGRITY_ISSUE_PREFIX = "FAB"
@@ -34,8 +42,6 @@ _OUTLINE_RE = re.compile(
     r"outline|oln|border|rout|gko|keep.?out|board.?geom|profile|mechanical|成型|板框",
     re.IGNORECASE)
 
-_APERTURE_SHAPES = {"C", "R", "O", "P"}
-
 
 def _num(value) -> Optional[float]:
     try:
@@ -44,668 +50,191 @@ def _num(value) -> Optional[float]:
         return None
 
 
-def _coord_to_mm(raw: str, int_digits: int, dec_digits: int, unit: str) -> Optional[float]:
-    if raw is None:
-        return None
-    raw = raw.strip()
-    if raw == "":
-        return None
-    neg = raw.startswith("-")
-    digits = raw.lstrip("+-")
-    if "." in digits:
-        val = _num(digits)
-    else:
-        val = int(digits) / (10 ** dec_digits) if dec_digits else int(digits)
-    if val is None:
-        return None
-    if neg:
-        val = -val
-    return val * (INCH_TO_MM if unit == "inch" else 1.0)
-
-
 # ============================================================
-# Gerber RS-274X
+# 解析器入口 (实现见 dfm.io.gerber / dfm.io.excellon / dfm.io.odbpp)
 # ============================================================
-class GerberResult:
-    def __init__(self):
-        self.unit = "mm"
-        self.int_digits = 3
-        self.dec_digits = 3
-        self.apertures: Dict[int, dict] = {}
-        self.primitives: List[dict] = []
-        self.bbox = [None, None, None, None]
-        self.attributes_present = False
-        self.nets: Dict[str, Set[str]] = {}
-        self.ap_usage: Dict[int, int] = {}
-        self.feature_count = 0
-        self.file_name = ""
-        self.file_function = ""       # X2: %TF.FileFunction (Copper,L1,Top / SolderMask,Top / Profile ...)
-        self.file_part = ""           # X2: %TF.Part
-        self.aperture_function = ""   # X2: %TA.AperFunction (Conductor/Pad/Via/CopperBalancing...)
-
-    def add_point(self, x, y):
-        b = self.bbox
-        if x is None or y is None:
-            return
-        b[0] = x if b[0] is None else min(b[0], x)
-        b[1] = y if b[1] is None else min(b[1], y)
-        b[2] = x if b[2] is None else max(b[2], x)
-        b[3] = y if b[3] is None else max(b[3], y)
-
-
-_NUM = r"[-+]?\d*\.?\d+"
-
-
-def _parse_aperture(block: str) -> Optional[Tuple[int, dict]]:
-    m = re.match(r"(?:ADD)?(\d+)([A-Za-z_$][\w$]*),?(.*)", block)
-    if not m:
-        return None
-    dcode = int(m.group(1))
-    shape = m.group(2)
-    params_raw = m.group(3)
-    params = []
-    for p in params_raw.split("X"):
-        p = p.strip()
-        if p == "":
-            continue
-        v = _num(p)
-        params.append(v if v is not None else p)
-    return dcode, {"shape": shape, "params": params, "raw": block}
-
-
 def parse_gerber(path: str, layer_name: Optional[str] = None) -> dict:
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
+    """解析 Gerber RS-274X。
 
-    res = GerberResult()
-    res.file_name = layer_name or os.path.basename(path)
-    unit = "mm"
-    int_digits, dec_digits = 3, 3
-    cur_ap: Optional[int] = None
-    cur_x = cur_y = 0.0
-    interp = 1
-    cur_op = 1
-    in_macro = False
-    cur_negative = False
-    in_region = False
-    region_pts: List[Tuple[float, float]] = []
-    cur_net = ""
-    cur_pin = ""
-    cur_refdes = ""
-    ap_defined_used: Set[int] = set()
-
-    def finalize_segment(x1, y1, x2, y2, ap_code, kind="draw", width_mm=None):
-        prim = {
-            "type": kind, "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "aperture": ap_code, "width": width_mm, "clear": cur_negative,
-            "net": cur_net or "", "refdes": cur_refdes or "",
-            "pin": cur_pin or "", "layer": res.file_name,
-        }
-        res.primitives.append(prim)
-        res.add_point(x1, y1)
-        res.add_point(x2, y2)
-        res.feature_count += 1
-
-    def ap_width(ap_code):
-        ap = res.apertures.get(ap_code)
-        if not ap:
-            return None
-        shape = ap["shape"]
-        params = ap["params"]
-        if not params:
-            return None
-        v = params[0]
-        if not isinstance(v, (int, float)):
-            return None
-        w = v
-        if shape == "C":
-            return w * (INCH_TO_MM if unit == "inch" else 1.0)
-        if shape in ("R", "O") and len(params) >= 2 and isinstance(params[1], (int, float)):
-            return min(w, params[1]) * (INCH_TO_MM if unit == "inch" else 1.0)
-        return w * (INCH_TO_MM if unit == "inch" else 1.0)
-
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        cmd = line.rstrip("*")
-        if line.startswith("%FS"):
-            m = re.search(r"X(\d)(\d)Y(\d)(\d)", line)
-            if m:
-                int_digits = int(m.group(1))
-                dec_digits = int(m.group(2))
-            continue
-        if line.startswith("%MO"):
-            if "IN" in line.upper():
-                unit = "inch"
-            else:
-                unit = "mm"
-            res.unit = unit
-            continue
-        if line.startswith("%ADD") or line.startswith("%AD"):
-            block = line.strip("%").rstrip("*")
-            parsed = _parse_aperture(block)
-            if parsed:
-                dcode, ap = parsed
-                res.apertures[dcode] = ap
-            continue
-        if line.startswith("%TO"):
-            body = line.strip("%").rstrip("*")
-            parts = body.split(",")
-            if parts and parts[0] == "TO.N":
-                cur_net = ",".join(parts[1:]).strip()
-                cur_refdes = ""
-                cur_pin = ""
-                res.attributes_present = True
-            elif parts and parts[0] == "TO.P":
-                if len(parts) >= 2:
-                    cur_refdes = parts[1].strip()
-                if len(parts) >= 3:
-                    cur_pin = parts[2].strip()
-            continue
-        if line.startswith("%TD"):
-            if line.strip("%").rstrip("*") == "TD":
-                cur_net = ""
-                cur_refdes = ""
-                cur_pin = ""
-            continue
-        if line.startswith("%LPC"):
-            cur_negative = True
-            continue
-        if line.startswith("%LPD"):
-            cur_negative = False
-            continue
-        if line.startswith("%AM"):
-            in_macro = True
-            if line.count("%") >= 2:
-                in_macro = False
-            continue
-        if in_macro:
-            if "%" in line:
-                in_macro = False
-            continue
-        if line.startswith("%TF"):
-            body = line.strip("%").rstrip("*")
-            parts = body.split(",")
-            if parts and parts[0] == "TF.FileFunction":
-                res.file_function = ",".join(parts[1:]).strip()
-            elif parts and parts[0] == "TF.Part":
-                res.file_part = ",".join(parts[1:]).strip()
-            continue
-        if line.startswith("%TA"):
-            body = line.strip("%").rstrip("*")
-            parts = body.split(",")
-            if parts and parts[0] == "TA.AperFunction":
-                res.aperture_function = ",".join(parts[1:]).strip()
-            continue
-        if line.startswith("%"):
-            continue
-        if cmd.startswith("G36"):
-            in_region = True
-            region_pts = []
-            continue
-        if cmd.startswith("G37"):
-            in_region = False
-            if region_pts:
-                xs = [p[0] for p in region_pts]
-                ys = [p[1] for p in region_pts]
-                res.primitives.append({
-                    "type": "region", "points": list(region_pts),
-                    "x1": min(xs) if xs else 0, "y1": min(ys) if ys else 0,
-                    "x2": max(xs) if xs else 0, "y2": max(ys) if ys else 0,
-                    "width": None, "net": cur_net or "", "refdes": cur_refdes or "",
-                    "pin": cur_pin or "", "layer": res.file_name,
-                })
-                for p in region_pts:
-                    res.add_point(p[0], p[1])
-                res.feature_count += 1
-            region_pts = []
-            continue
-        if cmd.startswith("M"):
-            continue
-        # ---- G 代码 (模态) ----
-        gcodes = [int(g) for g in re.findall(r"G(\d+)", cmd)]
-        if 4 in gcodes:                      # G04 = 注释
-            continue
-        for g in gcodes:
-            if g in (1, 2, 3):
-                interp = g
-            elif g == 70:
-                unit = "inch"
-                res.unit = unit
-            elif g == 71:
-                unit = "mm"
-                res.unit = unit
-        # ---- 光圈选择 (Dnn, nn>=10) ----
-        for dm in re.finditer(r"D(\d+)", cmd):
-            n = int(dm.group(1))
-            if n >= 10:
-                cur_ap = n
-        # ---- 操作码 D01/D02/D03 (模态) ----
-        dops = [int(dm.group(1)) for dm in re.finditer(r"D(\d+)", cmd)
-                if int(dm.group(1)) in (1, 2, 3)]
-        if dops:
-            cur_op = dops[-1]
-        # ---- 坐标 X/Y/I/J (省略 = 沿用当前值) ----
-        mx = re.search(r"X(" + _NUM + r")", cmd)
-        my = re.search(r"Y(" + _NUM + r")", cmd)
-        mi = re.search(r"I(" + _NUM + r")", cmd)
-        mj = re.search(r"J(" + _NUM + r")", cmd)
-        m = mx or my or mi or mj
-        if m:
-            x = _coord_to_mm(mx.group(1), int_digits, dec_digits, unit) if mx else None
-            y = _coord_to_mm(my.group(1), int_digits, dec_digits, unit) if my else None
-            i_off = _coord_to_mm(mi.group(1), int_digits, dec_digits, unit) if mi else None
-            j_off = _coord_to_mm(mj.group(1), int_digits, dec_digits, unit) if mj else None
-            op = cur_op
-            nx = x if x is not None else cur_x
-            ny = y if y is not None else cur_y
-            if in_region:
-                if op in (1, 2):
-                    region_pts.append((nx, ny))
-                cur_x, cur_y = nx, ny
-                continue
-            if op == 3:
-                if cur_ap is None:
-                    res.primitives.append({"type": "error", "x1": nx, "y1": ny,
-                                           "x2": nx, "y2": ny, "error": "flash_no_aperture",
-                                           "net": cur_net, "layer": res.file_name})
-                else:
-                    w = ap_width(cur_ap)
-                    res.primitives.append({
-                        "type": "flash", "x1": nx, "y1": ny, "x2": nx, "y2": ny,
-                        "aperture": cur_ap, "width": w, "net": cur_net or "",
-                        "refdes": cur_refdes or "", "pin": cur_pin or "",
-                        "layer": res.file_name,
-                    })
-                    res.ap_usage[cur_ap] = res.ap_usage.get(cur_ap, 0) + 1
-                    res.add_point(nx, ny)
-                    res.feature_count += 1
-            elif op == 1:
-                if interp in (2, 3) and (i_off is not None or j_off is not None):
-                    w = ap_width(cur_ap) if cur_ap else None
-                    res.primitives.append({
-                        "type": "arc", "x1": cur_x, "y1": cur_y, "x2": nx, "y2": ny,
-                        "i": i_off or 0.0, "j": j_off or 0.0, "cw": interp == 2,
-                        "aperture": cur_ap, "width": w, "net": cur_net or "",
-                        "refdes": cur_refdes or "", "pin": cur_pin or "",
-                        "layer": res.file_name,
-                    })
-                    if cur_ap is not None:
-                        res.ap_usage[cur_ap] = res.ap_usage.get(cur_ap, 0) + 1
-                    res.add_point(cur_x, cur_y)
-                    res.add_point(nx, ny)
-                    cx, cy = cur_x + (i_off or 0), cur_y + (j_off or 0)
-                    r = ((cur_x - cx) ** 2 + (cur_y - cy) ** 2) ** 0.5
-                    res.add_point(cx - r, cy - r)
-                    res.add_point(cx + r, cy + r)
-                    res.feature_count += 1
-                else:
-                    w = ap_width(cur_ap) if cur_ap else None
-                    finalize_segment(cur_x, cur_y, nx, ny, cur_ap, "draw", w)
-                    if cur_ap is not None:
-                        res.ap_usage[cur_ap] = res.ap_usage.get(cur_ap, 0) + 1
-            if cur_net:
-                if cur_refdes and cur_pin:
-                    node = f"{cur_refdes}.{cur_pin}"
-                else:
-                    node = None
-                if node:
-                    res.nets.setdefault(cur_net, set()).add(node)
-            cur_x, cur_y = nx, ny
-            continue
-        if re.match(r"^M0?2", line):
-            continue
-
-    data = {
-        "kind": "gerber",
-        "file": path,
-        "name": res.file_name,
-        "unit": res.unit,
-        "apertures": res.apertures,
-        "primitives": res.primitives,
-        "bbox": res.bbox,
-        "feature_count": res.feature_count,
-        "attributes_present": res.attributes_present,
-        "nets": {k: sorted(v) for k, v in res.nets.items()},
-        "min_line_width_mm": _min_line_width(res),
-        "min_pad_mm": _min_pad(res),
-        "aperture_count": len(res.apertures),
-        "file_function": res.file_function,
-        "file_part": res.file_part,
-        "aperture_function": res.aperture_function,
-    }
-    return data
+    支持: ``%FS`` 位宽与零省略、``%MO``、光圈宏 ``%AM``(含 ``$n`` 参数表达式)、
+    阵列光圈与 ``%SR`` 区域阵列、``%LPD/%LPC`` 极性、``%IP``/``%TF.FilePolarity``
+    负片层、``%AS``/``%SF``/``%LN``、``G01/02/03``、``G74/G75``、``G36/G37``
+    区域填充、X2 属性 (``%TO.N/%TO.P/%TF.FileFunction``)。
+    焊盘保留真实形状 (``shape/w/h/rot/points/hole``)。
+    """
+    return _gerber.parse(path, layer_name)
 
 
-def _min_line_width(res: GerberResult) -> Optional[float]:
-    widths = [p.get("width") for p in res.primitives
-              if p.get("type") in ("draw", "arc") and p.get("width")]
-    return round(min(widths), 4) if widths else None
-
-
-def _min_pad(res: GerberResult) -> Optional[float]:
-    sizes = []
-    for dcode, ap in res.apertures.items():
-        params = ap.get("params") or []
-        if params and isinstance(params[0], (int, float)):
-            size = params[0]
-            if ap.get("shape") in ("R", "O") and len(params) >= 2 and isinstance(params[1], (int, float)):
-                size = min(params[0], params[1])
-            sizes.append(size * (INCH_TO_MM if res.unit == "inch" else 1.0))
-    return round(min(sizes), 4) if sizes else None
-
-
-# ============================================================
-# Excellon NC Drill
-# ============================================================
 def parse_excellon(path: str, plating: Optional[str] = None) -> dict:
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.readlines()
-
-    name = os.path.basename(path).upper()
-    if plating is None:
-        if "NPTH" in name or "NON" in name:
-            plating = "NPTH"
-        elif "PTH" in name or "DRL" in name:
-            plating = "PTH"
-        else:
-            plating = "unknown"
-
-    unit = "inch"
-    decimal_hint = False
-    tools: Dict[int, dict] = {}
-    holes: List[dict] = []
-    cur_tool = None
-    in_header = False
-    header_done = False
-
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith(";"):
-            continue
-        up = line.upper()
-        if up == "M48":
-            in_header = True
-            continue
-        if up == "%" or up == "M95":
-            in_header = False
-            header_done = True
-            continue
-        if up.startswith("METRIC") or up.startswith("M71"):
-            unit = "mm"
-            continue
-        if up.startswith("INCH") or up.startswith("M72"):
-            unit = "inch"
-            continue
-        if up.startswith("FMAT"):
-            continue
-        m = re.match(r"^T(\d+)C(" + _NUM + r")", line)
-        if m:
-            d = _num(m.group(2))
-            tools[int(m.group(1))] = {
-                "diameter": d,
-                "diameter_mm": (d * INCH_TO_MM if unit == "inch" else d) if d is not None else None,
-            }
-            continue
-        m = re.match(r"^T(\d+)$", line)
-        if m:
-            cur_tool = int(m.group(1))
-            continue
-        if up in ("G90", "G05", "M30", "G54DZ", "G54"):
-            continue
-        m = re.match(r"^(?:G0[123])?X(" + _NUM + r")Y(" + _NUM + r")", line)
-        if m:
-            xs, ys = m.group(1), m.group(2)
-            if "X" in line and "Y" in line:
-                if "." in xs or "." in ys:
-                    decimal_hint = True
-            x = _parse_drill_coord(xs, unit)
-            y = _parse_drill_coord(ys, unit)
-            if cur_tool is None:
-                cur_tool = 1
-            tool = tools.get(cur_tool, {})
-            holes.append({
-                "x": x, "y": y, "tool": cur_tool,
-                "diameter_mm": tool.get("diameter_mm"),
-                "plating": plating,
-            })
-            continue
-
-    bbox = [None, None, None, None]
-    for h in holes:
-        if h["x"] is None or h["y"] is None:
-            continue
-        bbox[0] = h["x"] if bbox[0] is None else min(bbox[0], h["x"])
-        bbox[1] = h["y"] if bbox[1] is None else min(bbox[1], h["y"])
-        bbox[2] = h["x"] if bbox[2] is None else max(bbox[2], h["x"])
-        bbox[3] = h["y"] if bbox[3] is None else max(bbox[3], h["y"])
-
-    diameters = [h["diameter_mm"] for h in holes if h.get("diameter_mm")]
-    return {
-        "kind": "drill",
-        "file": path,
-        "name": os.path.basename(path),
-        "unit": unit,
-        "plating": plating,
-        "tools": tools,
-        "holes": holes,
-        "hole_count": len(holes),
-        "min_hole_mm": round(min(diameters), 4) if diameters else None,
-        "max_hole_mm": round(max(diameters), 4) if diameters else None,
-        "bbox": bbox,
-    }
+    """解析 Excellon NC 钻孔 (刀具表 / 重复孔 R## / G85 与 M15-M16 槽孔)。"""
+    return _excellon.parse(path, plating)
 
 
-def _parse_drill_coord(raw: str, unit: str) -> Optional[float]:
-    if raw is None:
-        return None
-    raw = raw.strip()
-    if raw == "":
-        return None
-    if "." in raw:
-        v = _num(raw)
-        if v is None:
-            return None
-        return v * (INCH_TO_MM if unit == "inch" else 1.0)
-    neg = raw.startswith("-")
-    digits = raw.lstrip("+-")
-    if not digits.isdigit():
-        return None
-    scale = 1000.0 if unit == "mm" else 10000.0
-    v = int(digits) / scale
-    if neg:
-        v = -v
-    return v
-
-
-# ============================================================
-# ODB++
-# ============================================================
 def parse_odbpp(job_dir: str) -> dict:
-    matrix_path = os.path.join(job_dir, "matrix", "matrix")
-    layers: List[dict] = []
-    features: List[dict] = []
-    nets: Dict[str, Set[str]] = {}
-    units = "inch"
+    """解析 ODB++ 作业 (matrix / features 含符号表与铺铜 / 阵列 R / netlist / components)。"""
+    return _odbpp.parse_job(job_dir)
 
-    if os.path.exists(matrix_path):
-        with open(matrix_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("UNITS"):
-                    val = line.split("=")[-1].strip().upper()
-                    units = "mm" if val.startswith("MM") else "inch"
-                m = re.match(r"^LAYER\s*\{?\s*(\S+)\s+(\S+)", line)
-                if m:
-                    layers.append({"name": m.group(1), "type": m.group(2)})
 
-    scale = INCH_TO_MM if units == "inch" else 1.0
-    layers_dir = os.path.join(job_dir, "layers")
-    if os.path.isdir(layers_dir):
-        for lname in os.listdir(layers_dir):
-            feat_path = os.path.join(layers_dir, lname, "features")
-            if not os.path.isfile(feat_path):
-                continue
-            symbols: Dict[str, dict] = {}
-            with open(feat_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    if line.startswith("$"):
-                        parts = line[1:].split()
-                        if len(parts) >= 2:
-                            symbols[parts[0]] = {"type": parts[1], "params": parts[2:]}
-                        continue
-                    if line.startswith("#"):
-                        continue
-                    parts = line.split()
-                    if not parts:
-                        continue
-                    rec = parts[0]
-                    attrs = {}
-                    if ";" in line:
-                        body, attr_part = line.split(";", 1)
-                        parts = body.split()
-                        for a in attr_part.split(";"):
-                            if "=" in a:
-                                k, v = a.split("=", 1)
-                                attrs[k] = v
-                    def g(i):
-                        try:
-                            return float(parts[i]) * scale
-                        except (IndexError, ValueError):
-                            return None
-                    if rec == "L" and len(parts) >= 6:
-                        features.append({"type": "draw", "x1": g(1), "y1": g(2),
-                                         "x2": g(3), "y2": g(4), "layer": lname,
-                                         "net": attrs.get("net", ""), "refdes": attrs.get("c", ""),
-                                         "pin": attrs.get("pn", "")})
-                    elif rec == "P" and len(parts) >= 3:
-                        features.append({"type": "flash", "x1": g(1), "y1": g(2),
-                                         "x2": g(1), "y2": g(2), "layer": lname,
-                                         "net": attrs.get("net", ""), "refdes": attrs.get("c", ""),
-                                         "pin": attrs.get("pn", "")})
-                    elif rec == "A" and len(parts) >= 7:
-                        features.append({"type": "arc", "x1": g(1), "y1": g(2),
-                                         "x2": g(5), "y2": g(6), "layer": lname,
-                                         "net": attrs.get("net", ""), "refdes": attrs.get("c", ""),
-                                         "pin": attrs.get("pn", "")})
-
-    for net_file in (os.path.join(job_dir, "netlists", "cadnet", "netlist"),
-                     os.path.join(job_dir, "netlists", "netlist")):
-        if os.path.isfile(net_file):
-            nets.update(_parse_odb_netlist(net_file))
+def flatten_odb_job(job: dict) -> List[dict]:
+    """把 ODB++ 作业解析结果摊平为与其它数据源一致的层列表。"""
+    out: List[dict] = []
+    for layer in job.get("layers") or []:
+        out.append(layer)
+    for drill in job.get("drills") or []:
+        out.append(drill)
+    for note in job.get("notes") or []:
+        for layer in out:
+            layer.setdefault("notes", [])
+            if note not in layer["notes"]:
+                layer["notes"].append(note)
             break
-
-    bbox = [None, None, None, None]
-    for feat in features:
-        for (x, y) in ((feat.get("x1"), feat.get("y1")), (feat.get("x2"), feat.get("y2"))):
-            if x is None or y is None:
-                continue
-            bbox[0] = x if bbox[0] is None else min(bbox[0], x)
-            bbox[1] = y if bbox[1] is None else min(bbox[1], y)
-            bbox[2] = x if bbox[2] is None else max(bbox[2], x)
-            bbox[3] = y if bbox[3] is None else max(bbox[3], y)
-
-    return {
-        "kind": "odbpp",
-        "file": job_dir,
-        "name": os.path.basename(os.path.normpath(job_dir)),
-        "unit": units,
-        "layers": layers,
-        "layer_count": len(layers),
-        "features": features,
-        "feature_count": len(features),
-        "nets": {k: sorted(v) for k, v in nets.items()},
-        "bbox": bbox,
-        "attributes_present": bool(nets),
-    }
-
-
-def _parse_odb_netlist(path: str) -> Dict[str, Set[str]]:
-    nets: Dict[str, Set[str]] = {}
-    cur = None
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith(";"):
-                continue
-            if ";" in line and not line.startswith("+"):
-                head, *nodes = line.split(";")
-                head = head.strip()
-                cur = head
-                nets.setdefault(cur, set())
-                for n in nodes:
-                    n = n.strip()
-                    if n:
-                        nets[cur].add(n.replace("-", "."))
-                continue
-            m = re.match(r"^(\d+)\s+(\S+)", line)
-            if m:
-                cur = m.group(2)
-                nets.setdefault(cur, set())
-                continue
-            if line.startswith("+"):
-                node = line[1:].strip().replace("-", ".")
-                if cur and node:
-                    nets[cur].add(node)
-                continue
-            if cur:
-                nets[cur].add(line.replace("-", "."))
-    return nets
+    if job.get("components"):
+        for layer in out:
+            layer["components"] = job["components"]
+            break
+    return out
 
 
 # ============================================================
-# 统一读取
+# 统一读取 (目录 / 文件 / 文件列表 / 压缩包)
 # ============================================================
-def read_fab_data(path) -> List[dict]:
-    """读取 Gerber/Excellon/ODB++ (目录/文件/路径列表), 返回数据列表"""
+ARCHIVE_EXTS = (".zip", ".tgz", ".tar.gz", ".tar", ".gz")
+
+#: 解析结果缓存: {(路径, mtime, 大小): fab_data}
+#: 用途: 改规则集/换板厂后重跑同一份数据时不必重新解析 (大 Gerber 解析是主要耗时项)。
+#: 键含 mtime 与大小, 文件一变即失效; 进程内有效, 容量上限由 _CACHE_MAX 控制。
+_PARSE_CACHE: "OrderedDict[Tuple[str, float, int], List[dict]]" = OrderedDict()
+_CACHE_MAX = 8
+
+
+def _cache_key(path: str) -> Optional[Tuple[str, float, int]]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.abspath(path), st.st_mtime, st.st_size)
+
+
+def _dir_cache_key(directory: str) -> Optional[Tuple[str, float, int]]:
+    """目录缓存键: 取目录内全部相关文件的 (数量, 最大 mtime, 总大小) 指纹。"""
+    count = 0
+    newest = 0.0
+    total = 0
+    for root, _dirs, files in os.walk(directory):
+        for fn in files:
+            try:
+                st = os.stat(os.path.join(root, fn))
+            except OSError:
+                continue
+            count += 1
+            total += st.st_size
+            newest = max(newest, st.st_mtime)
+    if not count:
+        return None
+    return (os.path.abspath(directory), newest, total)
+
+
+def clear_parse_cache() -> None:
+    """清空解析缓存 (规则库/数据变更后可调用; 正常无需手动调用)。"""
+    _PARSE_CACHE.clear()
+
+
+def read_fab_data(path, use_cache: bool = True) -> List[dict]:
+    """读取制造数据, 返回统一的层数据列表。
+
+    支持: Gerber 文件/目录、Excellon 钻孔、ODB++ 作业目录、
+    以及 ``.zip`` / ``.tgz`` / ``.tar`` 压缩包 (自动解包到临时目录后解析)。
+
+    :param use_cache: 命中 (路径, mtime, 大小) 指纹时复用上次解析结果
+    """
     if isinstance(path, (list, tuple)):
         result: List[dict] = []
         for p in path:
-            result.extend(read_fab_data(p))
+            result.extend(read_fab_data(p, use_cache=use_cache))
         return result
-    result: List[dict] = []
-    if os.path.isdir(path):
-        if os.path.isdir(os.path.join(path, "matrix")) or \
-           os.path.isfile(os.path.join(path, "matrix", "matrix")):
-            result.append(parse_odbpp(path))
-        else:
-            for root, _dirs, files in os.walk(path):
-                for fn in sorted(files):
-                    result.extend(_read_single(os.path.join(root, fn)))
+    if not path:
+        return []
+    p = str(path)
+
+    key = None
+    if use_cache:
+        key = _dir_cache_key(p) if os.path.isdir(p) else _cache_key(p)
+        if key is not None and key in _PARSE_CACHE:
+            _PARSE_CACHE.move_to_end(key)
+            logger.debug("解析缓存命中: %s", p)
+            return _PARSE_CACHE[key]
+
+    if os.path.isdir(p):
+        data = _read_dir(p)
+    elif p.lower().endswith(ARCHIVE_EXTS):
+        data = _read_archive(p)
     else:
-        result.extend(_read_single(path))
+        data = _read_single(p)
+
+    if use_cache and key is not None and data:
+        _PARSE_CACHE[key] = data
+        while len(_PARSE_CACHE) > _CACHE_MAX:
+            _PARSE_CACHE.popitem(last=False)
+    return data
+
+
+def _read_dir(directory: str) -> List[dict]:
+    if os.path.isfile(os.path.join(directory, "matrix", "matrix")):
+        return flatten_odb_job(parse_odbpp(directory))
+    result: List[dict] = []
+    for root, _dirs, files in os.walk(directory):
+        for fn in sorted(files):
+            full = os.path.join(root, fn)
+            if full.lower().endswith(ARCHIVE_EXTS):
+                result.extend(_read_archive(full))
+            else:
+                result.extend(_read_single(full))
     return result
+
+
+def _read_archive(archive: str) -> List[dict]:
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="evan_dfm_fab_")
+    try:
+        root = _odbpp.extract_archive(archive, tmp)
+        if not root:
+            logger.warning("无法解包: %s", archive)
+            return []
+        return _read_dir(root)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _read_single(path: str) -> List[dict]:
     low = path.lower()
-    if low.endswith(".drl") or "drill" in low or "npt" in low:
+    if low.endswith((".drl", ".exc", ".nc", ".txt")) or "drill" in low or "npt" in low:
         try:
             return [parse_excellon(path)]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("解析钻孔文件失败, 已跳过: %s (%s)", path, exc)
             return []
-    if low.endswith((".gbr", ".ger", ".art", ".pho")) or _looks_like_gerber(path):
+    if low.endswith((".gbr", ".ger", ".art", ".pho", ".gtl", ".gbl", ".gts", ".gbs",
+                     ".gto", ".gbo", ".gtp", ".gbp", ".gko", ".gm1")) or _looks_like_gerber(path):
         try:
             return [parse_gerber(path)]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("解析 Gerber 文件失败, 已跳过: %s (%s)", path, exc)
             return []
     return []
 
 
 def _looks_like_gerber(path: str) -> bool:
+    """通过头部特征判断是否为 Gerber 文件。"""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(4096)
-        return "%FS" in head or "%MO" in head or "%ADD" in head or "G04" in head
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            head = f.read(8192)
     except OSError as exc:
         logger.debug("探测 Gerber 文件失败: %s (%s)", path, exc)
         return False
+    return any(tok in head for tok in ("%FS", "%MO", "%ADD", "%AM", "G04", "G36"))
+
 
 
 # ============================================================
@@ -733,51 +262,69 @@ def integrity_check(fab_data: List[dict]) -> List[dict]:
     gerbers = [d for d in fab_data if d["kind"] == "gerber"]
     drills = [d for d in fab_data if d["kind"] == "drill"]
     odb = [d for d in fab_data if d["kind"] == "odbpp"]
+    images = gerbers + odb            # 图形层 (Gerber 与 ODB++ 层同构处理)
 
-    if not gerbers and not odb:
+    if not images:
         add("制造数据", "图形层缺失", "危险", "缺少线路/图形层 (Gerber 或 ODB++)",
             suggestion="补充 Gerber 或 ODB++ 数据")
-    if not drills and not odb:
+    if not drills:
         add("制造数据", "钻孔层缺失", "危险", "缺少 NC Drill / ODB++ 钻孔数据",
             suggestion="补充 NC Drill 文件")
 
     seen_layers: Set[str] = set()
-    for g in gerbers:
-        name = g["name"].lower()
-        base = re.sub(r"[^a-z]", "", name)
-        if base in seen_layers:
+    for g in images:
+        name = str(g.get("name") or "")
+        base = re.sub(r"[^a-z0-9]", "", name.lower())
+        if base and base in seen_layers:
             add("制造数据", "图层重复", "中",
-                f"检测到疑似重复图层: {g['name']}", layer=g["name"],
+                f"检测到疑似重复图层: {name}", layer=name,
                 suggestion="核对叠层/图层命名, 删除重复输出")
         seen_layers.add(base)
-        if not g["attributes_present"]:
+        if not g.get("attributes_present") and _is_copper_layer(g):
             add("制造数据", "网络属性缺失", "中",
-                f"图层 {g['name']} 无 X2 网络属性 (TO.N/TO.P), 无法进行网络表比对",
-                layer=g["name"], suggestion="EDA 导出 Gerber 时启用 X2 属性")
-        if g["feature_count"] == 0:
+                f"图层 {name} 无网络属性 (Gerber X2 的 TO.N/TO.P 或 ODB++ .net_name), "
+                f"无法进行网络表比对",
+                layer=name, suggestion="EDA/CAM 导出时启用 X2 属性, 或改用 ODB++ / 提供 CAD 网表")
+        if not g.get("feature_count"):
             add("制造数据", "空图层", "高",
-                f"图层 {g['name']} 无有效图形", layer=g["name"],
+                f"图层 {name} 无有效图形", layer=name,
                 suggestion="检查该层是否漏输出")
-        if g["bbox"][0] is not None and g["bbox"][2] is not None:
-            w = g["bbox"][2] - g["bbox"][0]
-            h = g["bbox"][3] - g["bbox"][1]
-            if w <= 0 or h <= 0:
+        bbox = g.get("bbox") or [None] * 4
+        if bbox[0] is not None and bbox[2] is not None:
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            # 仅在图形范围真正退化(单点/负值)时告警: 只有横向走线的层 H=0 属正常
+            if w < 0 or h < 0 or (w == 0 and h == 0):
                 add("制造数据", "坐标偏移", "高",
-                    f"图层 {g['name']} 图形范围异常 (W={w:.3f}, H={h:.3f})", layer=g["name"],
+                    f"图层 {name} 图形范围异常 (W={w:.3f}, H={h:.3f})", layer=name,
                     suggestion="检查坐标系/偏移与单位设定")
-        for prim in g["primitives"]:
+        # 负片层: 正常工艺, 但需提示判定方式 (已做极性合成)
+        if g.get("image_polarity") == "negative" or g.get("negative_layer"):
+            add("制造数据", "负片图层", "低",
+                f"图层 {name} 为负片 (图像/层极性为 negative), 铜箔 = 整面减去 clear 图形; "
+                f"已做极性合成, 但建议人工复核平面层连接",
+                layer=name, suggestion="确认平面层 anti-pad/散热环设计意图, 必要时提供正片输出")
+        # 解析异常图元 (未定义光圈的 flash 等)
+        for prim in _layer_prims(g):
             if prim.get("type") == "error":
-                add("制造数据", "孔径未定义", "高",
-                    f"图层 {g['name']} 存在未定义光圈的 Flash", layer=g["name"],
+                rule = {"flash_no_aperture": "孔径未定义",
+                        "draw_no_aperture": "孔径未定义",
+                        "macro_expand_failed": "光圈宏展开失败",
+                        "aperture_no_size": "孔径定义错误"}.get(prim.get("error"), "图形畸变")
+                add("制造数据", rule, "高",
+                    f"图层 {name} 存在异常图形 ({prim.get('error')})", layer=name,
                     x=prim.get("x1"), y=prim.get("y1"),
-                    suggestion="修正光圈定义 (ADD)")
+                    suggestion="修正光圈定义 (ADD) 或重新导出该层")
                 break
+        # 光圈/符号定义异常
         for dcode, ap in (g.get("apertures") or {}).items():
             params = ap.get("params") or []
-            if params and isinstance(params[0], (int, float)) and params[0] <= 0:
+            bad = (params and isinstance(params[0], (int, float)) and params[0] <= 0)
+            if bad or ap.get("kind") == "unknown" or ap.get("note"):
                 add("制造数据", "孔径定义错误", "高",
-                    f"图层 {g['name']} 光圈 D{dcode} 尺寸<=0", layer=g["name"],
-                    suggestion="修正光圈尺寸定义")
+                    f"图层 {name} 光圈 D{dcode} 定义异常"
+                    + (f": {ap.get('note')}" if ap.get("note") else " (尺寸<=0 或类型未知)"),
+                    layer=name, suggestion="修正光圈尺寸/类型定义后重新导出")
 
     for d in drills:
         if d.get("hole_count", 0) == 0:
@@ -787,19 +334,60 @@ def integrity_check(fab_data: List[dict]) -> List[dict]:
             add("制造数据", "镀通孔标注", "低",
                 f"钻孔文件 {d['name']} 未标注 PTH/NPTH", layer=d["name"],
                 suggestion="按镀通孔/非镀通孔分文件输出")
+        slots = [h for h in (d.get("holes") or []) if h.get("is_slot")]
+        no_dia = [h for h in (d.get("holes") or []) if not h.get("diameter_mm")]
+        if no_dia:
+            add("制造数据", "孔径未定义", "高",
+                f"钻孔文件 {d['name']} 有 {len(no_dia)} 个孔无孔径 (刀具未定义)",
+                layer=d["name"], suggestion="补全刀具表 (TxxCyy) 后重新导出")
+        if slots:
+            add("制造数据", "含槽孔", "低",
+                f"钻孔文件 {d['name']} 含 {len(slots)} 个槽孔 (G85/铣槽), "
+                f"已按槽参与孔到线/孔到板边判定",
+                layer=d["name"], suggestion="确认板厂槽孔能力 (最小宽度/长度/间距)")
+        for note in d.get("notes") or []:
+            add("制造数据", "解析提示", "低", f"钻孔文件 {d['name']}: {note}",
+                layer=d["name"], suggestion="核对钻孔文件格式")
 
-    if len(gerbers) > 1:
-        boxes = [(g["name"], g["bbox"]) for g in gerbers if g["bbox"][0] is not None]
-        if boxes:
-            ref = boxes[0][1]
+    if len(images) > 1:
+        # 只在**同类层**(铜层与铜层)之间比较原点: 阻焊/丝印/外形层的图形范围
+        # 本来就与铜层不同, 跨类型比较会产生大量假"坐标偏移"
+        boxes = [(str(g.get("name")), g.get("bbox")) for g in images
+                 if _is_copper_layer(g) and (g.get("bbox") or [None])[0] is not None]
+        if len(boxes) > 1:
+            ref_name, ref = boxes[0]
             for name, b in boxes[1:]:
                 if abs(b[0] - ref[0]) > 1.0 or abs(b[1] - ref[1]) > 1.0:
                     add("制造数据", "层间坐标偏移", "高",
-                        f"图层 {name} 与 {boxes[0][0]} 坐标原点偏移 >1mm", layer=name,
+                        f"铜层 {name} 与 {ref_name} 坐标原点偏移 >1mm", layer=name,
                         x=b[0], y=b[1],
-                        suggestion="统一各层输出坐标系/原点")
+                        suggestion="统一各层输出坐标系/原点 (同一 CAM 作业一次性导出)")
 
     return issues
+
+
+def _layer_prims(layer: dict) -> List[dict]:
+    """取一个图形层的图元列表 (Gerber 用 primitives, ODB++ 用 features)。"""
+    return layer.get("primitives") or layer.get("features") or []
+
+
+#: 非铜层关键字: 这些层本来就不带网络属性, 不应据此报"网络属性缺失"
+_NON_COPPER_RE = re.compile(
+    r"mask|silk|legend|paste|stencil|profile|outline|rout|document|drill|"
+    r"gts|gbs|gto|gbo|gtp|gbp|gko|gm1|keep.?out|mechanical|成型|板框|阻焊|丝印",
+    re.IGNORECASE)
+
+
+def _is_copper_layer(layer: dict) -> bool:
+    """判断一个图形层是否为铜箔层 (只有铜层才要求带网络属性)。"""
+    kind = str(layer.get("layer_kind") or layer.get("odb_type") or "").lower()
+    if kind:
+        return kind in ("copper", "signal", "power_ground", "mixed")
+    ff = str(layer.get("file_function") or "")
+    if ff:
+        return ff.split(",")[0].strip().lower() in ("copper", "mixed")
+    name = str(layer.get("name") or "")
+    return not bool(_NON_COPPER_RE.search(name))
 
 
 # ============================================================
@@ -926,38 +514,6 @@ def _min_attr(data, key):
     return round(min(vals), 4) if vals else None
 
 
-def build_fab_report(fab_result: dict, comparison: Optional[dict] = None,
-                     path: str = "") -> dict:
-    """将制造数据 DFM 结果整理为与 dfm.report.writers.generate_dfm_excel 兼容的结构"""
-    from dfm.core.issue import summarize_issues, compute_risk_score
-    issues = list(fab_result.get("issues", []))
-    if comparison is not None:
-        issues += netlist_compare_issues(comparison)
-    stats = fab_result.get("stats", {})
-    info = {
-        "manufacturing": {
-            "Gerber图层数": len(stats.get("gerber_layers", [])),
-            "钻孔文件数": len(stats.get("drill_files", [])),
-            "ODB++工程数": len(stats.get("odb_jobs", [])),
-            "图形总数": stats.get("feature_count"),
-            "孔总数": stats.get("hole_count"),
-            "最小线宽": stats.get("min_line_width_mm"),
-            "最小孔径": stats.get("min_hole_mm"),
-        },
-        "assembly": {},
-        "capability_notes": {},
-    }
-    return {
-        "factory_label": "制造数据",
-        "board_type_label": os.path.basename(os.path.normpath(path)) if path else "Fabrication",
-        "capability_label": "Gerber/ODB++/NC Drill",
-        "copper_um": None,
-        "issues": issues,
-        "issue_summary": summarize_issues(issues),
-        "risk": compute_risk_score(issues),
-        "info_stats": info,
-    }
-
 
 # ============================================================
 # fab_data -> 统一 design schema (复用 BRD 的几何 DFM/开短路/报告)
@@ -975,6 +531,8 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
     pads: List[dict] = []
     vias: List[dict] = []
     shapes: List[dict] = []
+    components: List[dict] = []
+    parse_notes: List[str] = []
     layers_seen: List[str] = []
     net_nodes: Dict[str, List[dict]] = {}
     pad_by_loc: Dict[Tuple[float, float], dict] = {}
@@ -998,6 +556,7 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
                 t = p.get("type")
                 net = p.get("net", "") or ""
                 layer = p.get("layer", "") or d.get("name", "") or ""
+                pol = "clear" if p.get("clear") else "dark"
                 _note_layer(layer)
                 if t in ("draw", "arc"):
                     x1, y1, x2, y2 = p.get("x1"), p.get("y1"), p.get("x2"), p.get("y2")
@@ -1007,18 +566,35 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
                         outline_pts += [[x1, y1], [x2, y2]]
                         all_x += [x1, x2]; all_y += [y1, y2]
                         continue
-                    clines.append({"net": net, "layer": layer,
-                                   "width": p.get("width"),
-                                   "points": [[x1, y1], [x2, y2]]})
+                    rec = {"net": net, "layer": layer, "width": p.get("width"),
+                           "points": [[x1, y1], [x2, y2]], "polarity": pol}
+                    if t == "arc":
+                        rec["arc"] = {"cx": p.get("cx"), "cy": p.get("cy"),
+                                      "i": p.get("i"), "j": p.get("j"),
+                                      "cw": p.get("cw")}
+                    clines.append(rec)
                     all_x += [x1, x2]; all_y += [y1, y2]
                 elif t == "flash":
                     x, y = p.get("x1"), p.get("y1")
                     if x is None or y is None:
                         continue
-                    w = p.get("width") or 0.3
+                    # 真实焊盘尺寸: 优先 shape/w/h, 退化到 width
+                    w = p.get("w") or p.get("width") or 0.0
+                    h = p.get("h") or p.get("width") or w
                     pad = {"refdes": p.get("refdes", "") or "", "pin": p.get("pin", "") or "",
                            "net": net, "x": x, "y": y, "layer": layer, "padstack": "",
-                           "is_smd": False, "pad_w": w, "pad_h": w, "drill_mm": 0}
+                           "is_smd": False, "pad_w": w or 0.3, "pad_h": h or w or 0.3,
+                           "drill_mm": 0,
+                           "pad_shape": p.get("shape") or "circle",
+                           "pad_rot": p.get("rot") or 0.0,
+                           "polarity": pol}
+                    if p.get("points"):
+                        pad["points"] = p["points"]
+                        pad["pad_shape"] = "poly"
+                    if p.get("hole"):
+                        pad["hole_mm"] = p["hole"]
+                    if str(p.get("feat_type", "")).upper() == "TEST":
+                        pad["is_testpoint"] = True
                     pads.append(pad)
                     pad_by_loc[(round(x, 2), round(y, 2))] = pad
                     all_x.append(x); all_y.append(y)
@@ -1030,7 +606,10 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
                     pts = p.get("points") or []
                     if len(pts) >= 3:
                         xs = [q[0] for q in pts]; ys = [q[1] for q in pts]
-                        shapes.append({"net": net, "layer": layer,
+                        shapes.append({"net": net, "layer": layer, "polarity": pol,
+                                       "points": [[q[0], q[1]] for q in pts],
+                                       "holes": [[[q[0], q[1]] for q in hole]
+                                                 for hole in (p.get("holes") or [])],
                                        "bbox": [min(xs), min(ys), max(xs), max(ys)]})
                         all_x += xs; all_y += ys
             # gerber/odb 自带 net->节点名 (无XY) 作为网表补充
@@ -1041,25 +620,39 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
                     if node not in have:
                         ref, _, pin = str(node).partition(".")
                         bucket.append({"refdes": ref, "pin": pin,
-                                       "x": None, "y": None, "layer": ""})
+                                        "x": None, "y": None, "layer": ""})
+            if d.get("components"):
+                components.extend(d["components"])
+            for note in d.get("notes") or []:
+                if note not in parse_notes:
+                    parse_notes.append(note)
         elif kind == "drill":
             for h in d.get("holes", []):
                 if h.get("x") is None:
                     continue
                 drill_holes.append(h)
                 all_x.append(h["x"]); all_y.append(h["y"])
+            for note in d.get("notes") or []:
+                if note not in parse_notes:
+                    parse_notes.append(note)
 
-    # 钻孔 -> 过孔 (就近匹配 flash 取网络/焊盘尺寸)
+    # 钻孔 -> 过孔 (就近匹配 flash 取网络/焊盘尺寸); 槽孔保留起止点
     for h in drill_holes:
         x, y, dia = h.get("x"), h.get("y"), h.get("diameter_mm")
         pad = pad_by_loc.get((round(x, 2), round(y, 2)))
-        vias.append({
+        via = {
             "net": (pad or {}).get("net", "") or "",
             "x": x, "y": y, "drill_mm": dia,
             "pad_mm": (pad or {}).get("pad_w"),
             "padstack": "", "start_layer": "", "end_layer": "",
-            "type": "through",
-        })
+            "type": "npth" if str(h.get("plating", "")).upper() == "NPTH" else "through",
+            "is_slot": bool(h.get("is_slot")),
+        }
+        if h.get("is_slot") and h.get("x2") is not None:
+            via["x2"] = h["x2"]
+            via["y2"] = h["y2"]
+            via["slot_length_mm"] = h.get("length_mm")
+        vias.append(via)
 
     # 板框: 仅当检测到专门轮廓层时使用真实轮廓 (否则留空, 不做铜箔到板边检查,
     # 避免以铜箔外包框当板边导致全部误判为"到边0mm")
@@ -1067,6 +660,13 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
 
     nets = [{"name": nm, "nodes": [nd for nd in nodes if nd.get("x") is not None]}
             for nm, nodes in sorted(net_nodes.items())]
+
+    # 测试点: ODB++ 带 .type=TEST 的焊盘 (Gerber 无此信息)
+    testpoints = [{"net": p.get("net", ""), "refdes": p.get("refdes", ""),
+                   "pin": p.get("pin", ""), "x": p["x"], "y": p["y"],
+                   "layer": p.get("layer", ""),
+                   "pad_mm": min(p.get("pad_w") or 0, p.get("pad_h") or 0) or None}
+                  for p in pads if p.get("is_testpoint") and p.get("x") is not None]
 
     return {
         "format": "brd-dfm-export",
@@ -1086,13 +686,14 @@ def fab_to_design(fab_data: List[dict], board_thickness: Optional[float] = None)
         "outline": outline,
         "stackup": [{"layer": l, "type": "signal"} for l in layers_seen],
         "nets": nets,
-        "components": [],
+        "components": components,
         "clines": clines,
         "vias": vias,
         "pads": pads,
         "shapes": shapes,
-        "testpoints": [],
+        "testpoints": testpoints,
         "opens": [],
         "drc": [],
         "net_avg_width_mm": {},
+        "parse_notes": parse_notes,
     }

@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QFileDialog, QGridLayout, QHBoxLayout,
+                               QLabel, QLineEdit, QMessageBox)
 
 from dfm.report import FORMATS
 from dfm.ui.pages.base import BasePage
-from dfm.ui.theme import colors
 from dfm.ui.widgets.common import Card, LogView, button, muted
 from dfm.ui.workers import TaskWorker
 
@@ -136,7 +135,7 @@ class ReportPage(BasePage):
     def _open_dir(self) -> None:
         d = self.dir_edit.text().strip() or self.state.output_dir()
         os.makedirs(d, exist_ok=True)
-        os.startfile(d)  # noqa: S606
+        os.startfile(d)
 
     def _template(self) -> None:
         from dfm.core.rules_config import default_config_path, template_text

@@ -22,8 +22,16 @@ FORMATS = ("excel", "html", "text", "json", "svg")
 _EXT = {"excel": ".xlsx", "html": ".html", "text": ".txt", "json": ".json", "svg": ".svg"}
 _BY_EXT = {v: k for k, v in _EXT.items()}
 
-__all__ = ["FORMATS", "export_report", "generate_dfm_excel", "generate_dfm_text",
-           "generate_dfm_html", "slim_analysis", "save_json", "save_svg"]
+__all__ = [
+    "FORMATS",
+    "export_report",
+    "generate_dfm_excel",
+    "generate_dfm_html",
+    "generate_dfm_text",
+    "save_json",
+    "save_svg",
+    "slim_analysis",
+]
 
 
 def slim_analysis(analysis: Dict[str, Any],

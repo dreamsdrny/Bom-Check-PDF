@@ -18,13 +18,17 @@
 """
 from typing import Dict, List, Optional, Set, Tuple
 
-from dfm.io.brd_model import BrdDesign, SpatialGrid, seg_seg_dist, sweep_pairs
-from dfm.core.issue import aggregate_by_rule, make_issue
+from dfm.io.brd_model import BrdDesign, SpatialGrid, sweep_pairs
+from dfm.core.issue import IssueCollector, aggregate_by_rule
 from dfm.core.registry import REQ_DESIGN, register_check
+from dfm.geom.clearance import batch_distances, element_clearance, element_location
+from dfm.geom.elements import ELEMENT_POUR, ELEMENT_TRACE, ELEMENT_VIA
 
 EPS = 0.005          # 接触判定容差 (mm)
 MAX_ELEMENTS = 400000
-MAX_REPORT = 500     # 每类问题最多输出实例数
+MAX_REPORT = 500     # 每类问题最多**留存**实例数 (处数仍全量计数)
+#: 接触判定批量计算的分批大小 (限制内存, 同时保持 shapely 向量化收益)
+SHORT_BATCH = 200_000
 
 
 class DSU:
@@ -52,64 +56,71 @@ class DSU:
 
 
 class _Node:
-    """连通性元素: 线段(p1->p2)+半径; 焊盘/过孔退化为中心点"""
-    __slots__ = ("net", "layer", "x1", "y1", "x2", "y2", "r", "multi",
-                 "minx", "miny", "maxx", "maxy", "refdes", "pin", "cline", "inside_shape")
+    """连通性元素: 包装一个 :class:`dfm.geom.elements.Element` (真实形状 + 极性已合成)。
 
-    def __init__(self, net, layer, x1, y1, x2, y2, r, multi=False,
-                 refdes="", pin="", cline=-1):
-        self.net = net or ""
-        self.layer = layer or ""
-        self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
-        self.r = r or 0.0
+    旧实现用"线段 + 半径"近似, 且不过滤负片图元 → 内层平面的 anti-pad 被当成铜箔,
+    产生大量假短路。现在统一由 :class:`dfm.geom.board.BoardGeometry` 提供元素。
+    """
+    __slots__ = (
+        "cline",
+        "el",
+        "inside_shape",
+        "layer",
+        "maxx",
+        "maxy",
+        "minx",
+        "miny",
+        "multi",
+        "net",
+        "pin",
+        "refdes",
+    )
+
+    def __init__(self, el, net=None, layer=None, multi=False, refdes=None, pin=None,
+                 cline=-1):
+        self.el = el
+        self.net = (el.net or "") if net is None else net
+        self.layer = (el.layer or "") if layer is None else layer
+        self.minx, self.miny, self.maxx, self.maxy = el.minx, el.miny, el.maxx, el.maxy
         self.multi = multi
-        self.minx = min(x1, x2) - self.r
-        self.maxx = max(x1, x2) + self.r
-        self.miny = min(y1, y2) - self.r
-        self.maxy = max(y1, y2) + self.r
-        self.refdes = refdes
-        self.pin = pin
+        self.refdes = (el.ref or "") if refdes is None else refdes
+        self.pin = (el.pin or "") if pin is None else pin
         self.cline = cline
         self.inside_shape = None
 
+    @property
+    def kind(self) -> str:
+        return self.el.kind
 
-def _build_nodes(design: BrdDesign, include_shapes: bool):
+
+def _build_nodes(design: BrdDesign, include_shapes: bool = True, geometry=None):
+    """从共享几何模型构建连通性节点 (真实形状, 负片已合成)。"""
+    if geometry is None:
+        from dfm.geom.board import BoardGeometry
+
+        geometry = BoardGeometry(design=design)
     nodes: List[_Node] = []
-    shapes: List[dict] = []
-    for ci, cl in enumerate(design.clines):
-        pts = cl["points"]
-        r = (cl["width"] or 0.0) / 2.0
-        for i in range(len(pts) - 1):
-            x1, y1 = pts[i]
-            x2, y2 = pts[i + 1]
-            nodes.append(_Node(cl["net"], cl["layer"], x1, y1, x2, y2, r,
-                               multi=False, cline=ci))
-            if len(nodes) >= MAX_ELEMENTS:
-                return nodes, shapes
-    for p in design.pads:
-        if p["x"] is None:
-            continue
-        w = p["pad_w"] or p["pad_h"] or 0.3
-        multi = not p["is_smd"]          # 插件焊盘跨层连通
-        nodes.append(_Node(p["net"], p["layer"], p["x"], p["y"], p["x"], p["y"],
-                           w / 2.0, multi=multi, refdes=p["refdes"], pin=p["pin"]))
+    truncated = False
+    for el in geometry.elements:
+        multi = el.kind == ELEMENT_VIA           # 过孔跨层连通
+        cline = -1 if el.kind != ELEMENT_TRACE else int(el.attrs.get("cline_index", -1))
+        nodes.append(_Node(el, multi=multi, cline=cline))
         if len(nodes) >= MAX_ELEMENTS:
-            return nodes, shapes
-    for v in design.vias:
-        if v["x"] is None:
-            continue
-        r = (v["pad_mm"] or 0.5) / 2.0
-        nodes.append(_Node(v["net"], v["start_layer"] or v["end_layer"], v["x"], v["y"],
-                           v["x"], v["y"], r, multi=True))
-        if len(nodes) >= MAX_ELEMENTS:
-            return nodes, shapes
-    if include_shapes:
-        for s in design.shapes:
-            bb = s["bbox"]
-            if bb[0] is None:
-                continue
-            shapes.append(s)
-    return nodes, shapes
+            truncated = True
+            break
+    shapes = [el for el in geometry.elements if el.kind == ELEMENT_POUR] \
+        if include_shapes else []
+    return nodes, shapes, truncated, geometry
+
+
+def _dsu_find(mapping: Dict[int, int], x: int) -> int:
+    """字典版并查集查找 (带路径压缩), 供逐网络局部连通域使用。"""
+    root = x
+    while mapping[root] != root:
+        root = mapping[root]
+    while mapping[x] != root:
+        mapping[x], x = root, mapping[x]
+    return root
 
 
 def _layers_compatible(a: _Node, b: _Node) -> bool:
@@ -121,31 +132,31 @@ def _layers_compatible(a: _Node, b: _Node) -> bool:
 
 
 def _touching(a: _Node, b: _Node) -> Tuple[bool, float, float]:
-    d, cx, cy = seg_seg_dist((a.x1, a.y1), (a.x2, a.y2), (b.x1, b.y1), (b.x2, b.y2))
-    return (d - a.r - b.r) <= EPS, cx, cy
+    """按真实几何判定接触 (含矩形/椭圆/多边形铺铜), 返回 (是否接触, x, y)。"""
+    d, cx, cy = element_clearance(a.el, b.el)
+    return d <= EPS, cx, cy
 
 
-def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] = None
+def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] = None,
+                    geometry=None, rules=None, instance_cap: int = MAX_REPORT
                     ) -> Tuple[List[dict], dict]:
-    """开短路 + 网表一致性; 返回 (issues, summary)"""
-    issues: List[dict] = []
-    counters = {"开路(Open)": 0, "短路(Short)": 0, "网表": 0}
+    """开短路 + 网表一致性; 返回 (问题实例列表, 统计摘要)。
+
+    :param geometry: 可选的共享 :class:`dfm.geom.board.BoardGeometry`
+                     (由编排层传入, 避免与制造 DFM 重复建表)
+    :param instance_cap: 每规则**留存**实例上限; 处数始终全量计数
+    """
+    col = IssueCollector(cap=int(instance_cap or MAX_REPORT))
 
     def emit(rule, severity, description, x=None, y=None, layer="", net="",
              measured=None, required=None, unit="", suggestion="", from_="", to="",
              note=""):
-        if counters.get(rule, 0) >= MAX_REPORT:
-            return
-        counters[rule] = counters.get(rule, 0) + 1
-        prefix = "NET" if rule in ("开路(Open)", "短路(Short)") else "NLC"
-        issues.append(make_issue(
-            code=f"{prefix}-{counters[rule]:04d}", category="网络比对", rule=rule,
-            severity=severity, description=description, measured=measured,
-            required=required, unit=unit, layer=layer, x=x, y=y,
-            suggestion=suggestion, from_=from_, to=to, note=note, net=net,
-        ))
+        return col.add("网络比对", rule, severity, description, x=x, y=y, layer=layer,
+                       net=net, measured=measured, required=required, unit=unit,
+                       suggestion=suggestion, from_=from_, to=to, note=note)
 
-    nodes, shapes = _build_nodes(design, include_shapes=True)
+    nodes, shapes, truncated, geom = _build_nodes(design, include_shapes=True,
+                                                  geometry=geometry)
     n = len(nodes)
     summary = {
         "logical_net_count": len(design.nets),
@@ -157,12 +168,13 @@ def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] =
         "nodes_without_copper": 0,
         "short_events": 0,
         "open_events": 0,
-        "truncated": n >= MAX_ELEMENTS,
+        "truncated": truncated or geom.stats.truncated,
+        "clear_elements_composed": geom.polarity.clear_elements,
     }
     if n == 0:
         emit("网表", "低", "无几何/网表数据, 无法进行开短路测试",
              suggestion="确认 SKILL 导出包含 clines/vias/pads/nets")
-        return issues, summary
+        return col.instances, summary
 
     dsu = DSU(n)
     avg_w = design.etch_width_is_average   # 走线宽为网络平均值: 短路仅按焊盘/过孔真实几何判定
@@ -170,27 +182,46 @@ def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] =
     authoritative = (design.connectivity_source == "allegro")
 
     short_events: List[Tuple[str, str, float, float]] = []
+    # 三段式: 广相 → 批量向量化净距 → 仅对确认接触/短路的对算定位点
+    batch: List[Tuple[int, int, bool]] = []      # (i, j, report_short)
+
+    def flush_batch() -> None:
+        if not batch:
+            return
+        dists = batch_distances([nd.el for nd in nodes],
+                                [(i, j) for i, j, _rs in batch])
+        for (i, j, report_short), dist in zip(batch, dists):
+            if dist > EPS:
+                continue
+            a, b = nodes[i], nodes[j]
+            same_net = (a.net == b.net)
+            # 连通域合并: 同网络必合; 跨网络仅在「按短路处理」时合并
+            # (authoritative 时跨网络接触交由 Allegro DRC, 不污染物理连通域计数)
+            if same_net or report_short:
+                dsu.union(i, j)
+            if report_short:
+                cx, cy = element_location(a.el, b.el, dist)
+                short_events.append((a.net, b.net, cx, cy))
+        batch.clear()
+
     for i, j in sweep_pairs(nodes, tol=EPS):
         a = nodes[i]
         b = nodes[j]
         if not _layers_compatible(a, b):
             continue
-        ok, cx, cy = _touching(a, b)
-        if not ok:
-            continue
         same_net = (a.net == b.net)
         # 宽电源走线按平均宽膨胀会造成跨网络假接触; 此类接触不计短路/不并入连通域,
         # 走线级短路交由 Allegro DRC 判定。
-        skip_etch = avg_w and (a.cline >= 0 or b.cline >= 0)
-        report_short = (not same_net) and (not skip_etch) and (not authoritative)
-        # 连通域合并: 同网络必合; 跨网络仅在「按短路处理」时合并 (authoritative 时
-        # 跨网络接触交由 Allegro DRC, 不污染物理连通域计数)
-        if same_net or report_short:
-            dsu.union(i, j)
-        if report_short:
-            short_events.append((a.net, b.net, cx, cy))
-    # 注: 铺铜(包围盒)连通采用「同网络且中心落入包围盒即视为连通」的近似, 在下面
-    #     按网络重建连通域时实现; 短路仅用真实走线/焊盘/过孔几何, 避免铺铜误报。
+        skip_etch = avg_w and (a.kind == ELEMENT_TRACE or b.kind == ELEMENT_TRACE)
+        # 仅有包围盒的铺铜是近似形状: 参与连通性, 但不据此判短路 (避免误报)
+        skip_approx = bool(a.el.attrs.get("approx") or b.el.attrs.get("approx"))
+        report_short = ((not same_net) and (not skip_etch) and (not skip_approx)
+                        and (not authoritative))
+        batch.append((i, j, report_short))
+        if len(batch) >= SHORT_BATCH:
+            flush_batch()
+    flush_batch()
+    # 注: 铺铜以真实多边形参与接触判定; 仅"只有包围盒"的退化铺铜不据此报短路。
 
     # ---------- 短路 (几何) ----------
     # 去重: 同一对网络只保留少量代表点
@@ -251,21 +282,17 @@ def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] =
                      x=nd0.get("x"), y=nd0.get("y"), net=net_name,
                      suggestion="核对该网络是否漏布/被删除")
             continue
-        # 局部并查集
+        # 局部并查集 (辅助函数在模块级, 显式传入映射, 避免闭包捕获循环变量)
         local = {idx: idx for idx in idxs}
 
-        def lfind(x):
-            while local[x] != x:
-                local[x] = local[local[x]]
-                x = local[x]
-            return x
+        def lfind(x, _m=local):
+            return _dsu_find(_m, x)
 
-        def lunion(a, b):
-            ra, rb = lfind(a), lfind(b)
+        def lunion(a, b, _m=local):
+            ra, rb = _dsu_find(_m, a), _dsu_find(_m, b)
             if ra != rb:
-                local[rb] = ra
+                _m[rb] = ra
 
-        pos = {idx: k for k, idx in enumerate(idxs)}  # noqa: F841 (索引备用)
         for i in idxs:
             a = nodes[i]
             for j in grid.query(a.minx - EPS, a.miny - EPS, a.maxx + EPS, a.maxy + EPS):
@@ -277,23 +304,8 @@ def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] =
                 ok, _cx, _cy = _touching(a, b)
                 if ok:
                     lunion(i, j)
-        # 铺铜连通(近似): 同网络、中心落入铺铜包围盒的元素并入同一域
-        for s in shapes:
-            if s["net"] != net_name or s["bbox"][0] is None:
-                continue
-            bb = s["bbox"]
-            anchor = None
-            for i in idxs:
-                a = nodes[i]
-                if a.layer != s["layer"]:
-                    continue
-                cx = (a.x1 + a.x2) / 2.0
-                cy = (a.y1 + a.y2) / 2.0
-                if bb[0] - EPS <= cx <= bb[2] + EPS and bb[1] - EPS <= cy <= bb[3] + EPS:
-                    if anchor is None:
-                        anchor = i
-                    else:
-                        lunion(anchor, i)
+        # 铺铜已作为真实多边形元素参与上面的接触判定与连通合并,
+        # 无需再用"包围盒近似"补偿 (仅 bbox 的铺铜见 skip_approx 处理)。
         # 连通域 -> 该域包含的引脚(refdes.pin)
         pin_node_index: Dict[str, int] = {}
         for i in idxs:
@@ -375,12 +387,20 @@ def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] =
                 "passed": cmp["passed"],
             }
             for it in netlist_compare_issues(cmp):
+                it = dict(it)
                 it["category"] = "网络比对"
-                issues.append(it)
-        except Exception:  # noqa: BLE001
+                # 与 IssueCollector.add 保持一致: 计数与留存同步累加,
+                # 否则会被误判为"处数超出留存上限"
+                key = ("网络比对", it.get("rule", ""))
+                col.counts[key] = col.counts.get(key, 0) + 1
+                col.retained[key] = col.retained.get(key, 0) + 1
+                col.instances.append(it)
+        except Exception:
             pass
 
-    return issues, summary
+    summary["counters"] = {f"{c}|{r}": n for (c, r), n in col.counts.items()}
+    summary["retained"] = {f"{c}|{r}": n for (c, r), n in col.retained.items()}
+    return col.instances, summary
 
 
 # ============================================================
@@ -390,17 +410,32 @@ def analyze_netlist(design: BrdDesign, fab_nets: Optional[Dict[str, Set[str]]] =
     id="netlist",
     name="开短路 + 网表一致性",
     group="网表",
-    description="几何连通性判定开路/短路 (定位 XY), 并与逻辑网表/制造网表比对",
+    description="几何连通性判定开路/短路 (真实形状+极性, 定位 XY), 并与逻辑/制造网表比对",
     requires=(REQ_DESIGN,),
     order=30,
 )
 def run_netlist(ctx) -> List[dict]:
-    """执行开短路与网表一致性检查。"""
-    instances, summary = analyze_netlist(ctx.design, fab_nets=ctx.fab_nets or None)
+    """执行开短路与网表一致性检查 (复用共享几何模型)。"""
+    instances, summary = analyze_netlist(ctx.design, fab_nets=ctx.fab_nets or None,
+                                         geometry=ctx.geometry, rules=ctx.rules,
+                                         instance_cap=int(ctx.options.get("instance_cap")
+                                                          or MAX_REPORT))
     for it in instances:
         it.setdefault("module", "netlist")
     ctx.extras.setdefault("instances", []).extend(instances)
     ctx.extras["netlist_summary"] = summary
+
+    counts = {}
+    retained = summary.get("retained") or {}
+    for key, n in (summary.get("counters") or {}).items():
+        cat, _, rule = key.partition("|")
+        counts[(cat, rule)] = n
+        if n > retained.get(key, 0):
+            ctx.add_truncation(f"网表规则 {rule} 处数 {n} 超出留存上限 "
+                               f"{retained.get(key, 0)}, 已按真实计数报告")
+    if summary.get("truncated"):
+        ctx.add_truncation("连通性元素数超出上限, 开短路结论可能不完整")
     ctx.note(f"    开短路: 开路网络 {summary.get('open_net_count')} / "
-             f"短路 {summary.get('short_net_count')} / 实例 {len(instances)}")
-    return aggregate_by_rule(instances)
+             f"短路 {summary.get('short_net_count')} / 违规 "
+             f"{sum(counts.values())} 处 (留存 {len(instances)})")
+    return aggregate_by_rule(instances, counts=counts)

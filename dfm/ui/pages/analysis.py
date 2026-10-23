@@ -1,18 +1,17 @@
 """分析页: 勾选检查项、执行分析、查看进度与日志。"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QProgressBar, QScrollArea, QSizePolicy, QSplitter,
+from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
+                               QProgressBar, QScrollArea, QSplitter,
                                QVBoxLayout, QWidget)
 
 from dfm.core import registry
-from dfm.ui.icons import icon
 from dfm.ui.pages.base import BasePage
 from dfm.ui.theme import colors
-from dfm.ui.widgets.common import (Card, LogView, StatusBadge, button, muted)
+from dfm.ui.widgets.common import (Card, LogView, StatusBadge, button)
 from dfm.ui.workers import AnalysisWorker
 
 
@@ -164,7 +163,7 @@ class AnalysisPage(BasePage):
         registry.load_builtin_checks()
         try:
             registry.load_plugins()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.log.write(f"[WARN] 插件加载失败: {exc}", "warn")
         while self.checks_lay.count() > 1:
             item = self.checks_lay.takeAt(0)
@@ -219,9 +218,18 @@ class AnalysisPage(BasePage):
         self.log.write(f"检查项: {', '.join(mods) if mods else '全部'}", "info")
         self._worker = AnalysisWorker(cfg)
         self._worker.progress.connect(self._on_progress)
+        self._worker.step.connect(self._on_step)
         self._worker.finished_.connect(self._on_done)
         self._worker.failed.connect(self._on_failed)
         self._worker.start()
+
+    def _on_step(self, done: int, total: int, name: str) -> None:
+        """确定性进度: 检查项逐个完成时推进进度条。"""
+        if total <= 0:
+            return
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress.setFormat(f"%v/%m  {name}")
 
     def _on_progress(self, msg: str) -> None:
         level = "err" if "[ERROR]" in msg else ("warn" if "[WARN]" in msg or "[提示]" in msg
@@ -231,6 +239,9 @@ class AnalysisPage(BasePage):
 
     def _on_done(self, analysis: Dict[str, Any]) -> None:
         self.badge.set_state("done")
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1)
+        self.progress.setFormat("完成")
         self.progress.setVisible(False)
         self.run_btn.setEnabled(True)
         s = analysis.get("issue_summary") or {}

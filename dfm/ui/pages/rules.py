@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
-                               QFrame, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+                               QHBoxLayout, QHeaderView, QLabel, QMessageBox,
                                QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
@@ -19,7 +19,7 @@ from dfm.core import registry
 from dfm.core.capability import (capability_file, factory_labels, list_board_types,
                                  list_factories, list_levels)
 from dfm.core.issue import SEVERITY_LEVELS
-from dfm.core.rules_config import RulesConfig, default_config_path, template_text
+from dfm.core.rules_config import default_config_path, template_text
 from dfm.ui.pages.base import BasePage
 from dfm.ui.theme import colors
 from dfm.ui.widgets.common import Card, LogView, button, muted
@@ -104,10 +104,14 @@ class RulesPage(BasePage):
         col2 = QVBoxLayout()
         grid.addLayout(col1, 1)
         grid.addLayout(col2, 1)
-        for i, spec in enumerate(registry.list_checks()):
-            box = QCheckBox(f"{spec.name}  ({spec.id})")
+        # 注册检查 + 两个"元开关"(声明式自定义规则 / 数据质量提示)
+        entries = [(s.id, f"{s.name}  ({s.id})") for s in registry.list_checks()]
+        entries += [("custom_rules", "声明式自定义规则  (custom_rules)"),
+                    ("data_quality", "数据质量与覆盖率提示  (data_quality)")]
+        for i, (cid, label) in enumerate(entries):
+            box = QCheckBox(label)
             box.setChecked(True)
-            self.check_boxes[spec.id] = box
+            self.check_boxes[cid] = box
             (col1 if i % 2 == 0 else col2).addWidget(box)
         col1.addStretch(1)
         col2.addStretch(1)
@@ -232,7 +236,7 @@ class RulesPage(BasePage):
                 types = list_board_types(fid)
                 levels = "; ".join(f"{bt}: {','.join(list_levels(bt, factory=fid))}"
                                    for bt in types)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 types, levels = [], ""
             for c, val in enumerate((fid, labels.get(fid, fid), ", ".join(types),
                                      levels, path, user_copy)):
@@ -285,14 +289,14 @@ class RulesPage(BasePage):
             hl.setAlignment(Qt.AlignCenter)
             hl.addWidget(chk)
             self.cu_table.setCellWidget(r, 0, cell)
-            for c, key in enumerate((("id", 1), ("name", 2), ("category", 3), ("param", 4),
-                                     ("op", 5), ("value", 6), ("severity", 7))):
+            for _c, key in enumerate((("id", 1), ("name", 2), ("category", 3), ("param", 4),
+                                      ("op", 5), ("value", 6), ("severity", 7))):
                 k, col = key
                 self.cu_table.setItem(r, col, QTableWidgetItem(str(rule.get(k, ""))))
             msg = rule.get("message") or ""
             sug = rule.get("suggestion") or ""
             self.cu_table.setItem(r, 8, QTableWidgetItem(
-                (msg + ("  ||  " + sug if sug else ""))))
+                msg + ("  ||  " + sug if sug else "")))
 
     def _refresh_plugins(self) -> None:
         registry.load_builtin_checks()
@@ -324,23 +328,23 @@ class RulesPage(BasePage):
         fid = self.cap_table.item(row, 0).text()
         path = capability_file(fid)
         if path:
-            os.startfile(path)  # noqa: S606
+            os.startfile(path)
 
     def _open_capability_dir(self) -> None:
         dirs = paths.capability_dirs()
         target = dirs[0] if dirs else paths.app_root()
         os.makedirs(target, exist_ok=True)
-        os.startfile(target)  # noqa: S606
+        os.startfile(target)
 
     def _open_rules_dir(self) -> None:
         target = os.path.join(paths.user_data_dir(), "rules")
         os.makedirs(target, exist_ok=True)
-        os.startfile(target)  # noqa: S606
+        os.startfile(target)
 
     def _open_plugin_dir(self) -> None:
         target = os.path.join(paths.user_data_dir(), "plugins")
         os.makedirs(target, exist_ok=True)
-        os.startfile(target)  # noqa: S606
+        os.startfile(target)
 
     def _copy_capability(self) -> None:
         row = self.cap_table.currentRow()
@@ -406,8 +410,8 @@ class RulesPage(BasePage):
         for r in range(self.cu_table.rowCount()):
             cell = self.cu_table.cellWidget(r, 0)
             chk = cell.findChild(QCheckBox) if cell else None
-            get = lambda c: (self.cu_table.item(r, c).text().strip()  # noqa: E731
-                             if self.cu_table.item(r, c) else "")
+            get = lambda c, _r=r: (self.cu_table.item(_r, c).text().strip()
+                                   if self.cu_table.item(_r, c) else "")
             param = get(4)
             if not param:
                 continue
@@ -542,7 +546,7 @@ class RulesPage(BasePage):
             target = default_config_path()
         try:
             self.state.rules.save(target)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
         self.state.apply_rules_path(target)

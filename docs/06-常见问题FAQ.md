@@ -44,28 +44,69 @@ A：因为 Gerber 缺少 X2 网络属性（`%TO.N` / `%TO.P`），网络只能�
 - 或改用 ODB++（自带网表）
 - 或提供 CAD 网表 JSON，勾 `fabnet` 做 CAD vs FAB 比对
 
-**Q：Gerber 目录里文件命名很奇怪，层识别错了**
-A：层识别优先看 X2 的 `%TF.FileFunction`，其次按文件名约定匹配（支持 AD/Protel/KiCad/Allegro/Eagle 常见命名：`.gtl/.gbl/.gts/.gbs/.gto/.gbo/.gtp/.gbp/.gko/.gm1`、`top/bottom`、`silk/mask/paste`、`profile/outline/edge.cuts` 等）。
-用 `python -m dfm info <目录>` 查看识别结果；识别不对时建议改名或补 X2 属性。
+**Q：支持的 Gerber / 钻孔 / ODB++ 特性到什么程度？**
+A：
+
+| 格式 | 已支持 | 说明 |
+| --- | --- | --- |
+| Gerber RS-274X | `%FS`(LA/TA + 位宽)、`%MO`、`%AD`(C/R/O/P + 中心孔 + 旋转)、**`%AM` 光圈宏**(图元 1/2/20/21/22/4/5 + `$n` 表达式 + `exposure=0` 挖除)、**阵列光圈 SR** 与 **`%SR` 区域阵列**、`%LPD/%LPC` 极性、`%IP`/`%TF.FilePolarity` 负片层、`%AS` 轴选择、`%SF` 缩放、`%LN` 层名、`%TO.N/%TO.P/%TO.C/%TD`、`%TF.FileFunction/%TF.Part`、`%TA.AperFunction`、`G01/02/03`、`G74/G75` 象限、`G36/G37` 区域填充、`G70/G71`、`D01/D02/D03` 模态 | 宏光圈在解析期扁平化为多边形点集；6/7/8 类对位标记宏图元按"未展开"记入解析提示 |
+| Excellon | `M48`/`%`/`M95` 头、`METRIC,LZ/TZ`、`INCH,LZ/TZ`、`M71/M72`、`FMAT`、`;FILE_FORMAT=i:d`、刀具表 `T01C0.3F200H500`、选刀 `T01`、卸刀 `T00`、`G90/G91`、`G05`、坐标省略模态、**重复孔 `R##`**、**`G85` 槽孔**、**`M15/M16` 铣槽路径**、`;TYPE=PLATED/NON_PLATED` | 槽孔输出 `is_slot/x2/y2/length_mm`，参与孔到线/孔到板边判定 |
+| ODB++ | `matrix/matrix`(UNITS、`STEP{}`、`LAYER{}` 含 TYPE 与 POLARITY)、`layers/*/features`(符号表 `$n`、`L/P/A` 记录、**`S`+`OB/OS/OE` 铺铜含内孔**、**`R` 阵列**、记录级与层级极性、`.net_name/.comp/.pn/.type` 属性)、`netlists/cadnet/netlist`、`components`、**`features.z`(gzip)**、**`job.tgz/.tar/.zip` 自动解包** | Unix `compress` 的 `.Z` 无法用 Python 解压，会给出明确提示（请先 `gzip -d` 或导出未压缩作业） |
+| Allegro `.brd` | 通过 `extracta.exe` 无界面提取（网表/几何/DRC/叠层/连通性），或 SKILL 脚本导出 JSON | 需要本机 Cadence；无则用 SKILL 导出 |
+
+解析阶段的所有受限情况（宏未展开、负片层、TZ 零省略、未定义刀具/符号、阵列展开数、
+压缩包格式）都会记入 `data_quality["解析提示"]`，在报告与界面可见 —— **不会静默降级**。
 
 **Q：板厚从哪里来？**
-A：`.brd`/JSON 里带板厚；Gerber/ODB++ **不含板厚**，必须在「数据源」页填「板厚」或命令行加 `--thickness`，否则 PTH 纵横比、塞孔纵横比会被跳过。人工填写的值优先于文件内的值。
+A：`.brd`/JSON 里带板厚；Gerber/ODB++ **不含板厚**，必须在「数据源」页填「板厚」或命令行加 `--thickness`，否则 PTH 纵横比、塞孔纵横比会被跳过（并计入"未判定规则"）。人工填写的值优先于文件内的值。
+
+**Q：Gerber 目录里文件命名很奇怪，层识别错了**
+A：层识别优先看 X2 的 `%TF.FileFunction`（ODB++ 看 matrix 的 `TYPE`），其次按文件名约定匹配（支持 AD/Protel/KiCad/Allegro/Eagle 常见命名：`.gtl/.gbl/.gts/.gbs/.gto/.gbo/.gtp/.gbp/.gko/.gm1`、`top/bottom`、`silk/mask/paste`、`profile/outline/edge.cuts` 等）。
+用 `python -m dfm info <目录>` 查看识别结果（会列出每个铜层/阻焊/丝印/外形/钻孔的判定依据）；识别不对时建议改名或补 X2 属性。
 
 **Q：ODB++ 目录怎么选？**
 A：选到含 `matrix/matrix` 的那一级目录（工程根），程序会自动识别为 `odb`。
+也可以直接选 `job.tgz` / `job.zip` 压缩包，会自动解包到临时目录再解析。
 
 ---
 
 ## 三、判定结果
 
+**Q：怎么知道哪些规则其实没判？**
+A：看**判定覆盖率**（三处都有）：
+
+* 界面「问题清单」页顶部横幅 + 「规则库」无关，直接看结果页
+* Excel 报告的 **数据质量** 页、HTML 报告的「数据质量与判定覆盖率」区块
+* 命令行输出行：`判定覆盖率: 78%   未判定规则: 12 项   解析提示: 3 条`
+
+未判定的原因通常是能力库缺该项（例如示例库 `jlcpcb.yaml` 没有塞孔/覆盖膜细节）或
+数据不足（无板框 → 到板边类规则无法判）。补齐 `rules/capability/<板厂>.yaml` 即可。
+问题清单里也会有一条「低」级的 `部分规则未判定` 提示，列出具体规则名。
+（不想看到这条提示：`checks.data_quality.enabled: false`）
+
+**Q：报告里的「数量」和图上标记数对不上？**
+A：正常。**数量是真实处数**，标记/坐标是留存实例（每规则默认上限 500 处）。
+超限时界面数量列会带 ⚠，悬停显示"实际 N 处，仅记录 M 处坐标"，
+Excel 对应单元格有批注，数据质量页也会列出被截断的规则。
+需要更多坐标时把配置里的 `instance_cap` 调大（`analyze(cfg={"instance_cap": 5000})`）。
+
+**Q：内层平面/负片层会不会误报短路？**
+A：不会。解析层记录 `%LPC`/`%IP`/ODB++ 记录级与层级极性，几何内核做
+`dark − clear` 逐元素布尔裁剪：anti-pad、散热隔离环、平面层挖空都按"非铜"处理，
+被完全挖除的图元丢弃、部分挖除的标记 `clipped`。合成统计（负片图元数、
+完全/部分挖除数）写在数据质量页。
+若整层是负片图像（`%IPN` 或 `TF.FilePolarity=Negative`），会额外给出"需人工复核"提示。
+
 **Q：明明没问题却报了一堆「到板边 0mm」**
 A：几乎都是板框识别问题。程序在**没有真实轮廓层**时会跳过到板边检查（避免把铜箔外包框当板边）；若你提供的轮廓层其实是铜层，请检查层识别结果（`info` 命令或界面预览）。
 
 **Q：线宽判定和 Allegro 不一致**
-A：注意两点：
+A：注意三点：
 
 1. 能力库的线宽/线距是**按成品铜厚分档**的，铜厚填错会整档偏移（`um` 与 `oz` 要对应，留空 `oz` 会自动换算）
 2. 若导出的走线宽是「网络平均值」（`etch_width_is_average=True`），间距与短路判定只采信焊盘/过孔真实尺寸，走线宽仍按实测报告
+3. 「接近制程极限」的告警带由 `limit_warn_ratio` 控制（0.8 → 阈值的 1.25 倍内告警）；
+   想只看硬违规就把它调到接近 1（如 0.98）
 
 **Q：某条规则客户不考核 / 想更严**
 A：不要改代码，用规则集：
@@ -89,22 +130,38 @@ A：`score = 100 − min(100, Σ权重×数量)`，默认危险项权重 10，10
 A：器件本体用**焊盘包围盒近似**（数据里没有器件实体外形），所以：
 
 - 有外形的高器件（连接器、屏蔽罩）实际间距会比计算值小 → 结果偏乐观
-- 基准点靠位号关键字识别（`FID/MARK/FP/BENCHMARK/基准`），客户命名特殊时在 `assembly.fiducial_names` 里加关键字
+- 基准点靠位号关键字识别（规则集 `assembly.fiducial_names`，默认 `FID/MARK/FP/BENCHMARK/基准`），客户命名特殊时把关键字加进去即可
+- Info 页的器件数/间距/基准点数与问题清单**同源同算法**（`dfm/geom/measure.py`），不会互相矛盾
+- 有 ODB++ `components` 或 BOM/坐标文件时精度更高（器件表参与本体构建）
 
 **Q：Via in Pad 报了很多，我们本来就做塞孔**
 A：设 `assembly.via_in_pad_allowed: true`，会降级为「低」并提示确认塞孔工艺。
+
+**Q：报告里的「潜在损失」金额哪来的？**
+A：默认**关闭**（`cost.enabled: false`）。金额没有行业统一出处，对外报告慎用；
+需要时在规则集 `cost.by_severity` 里按公司口径自定义。
 
 ---
 
 ## 四、性能
 
 **Q：大板分析很慢**
-A：内置检查已做空间索引（扫描剪枝 + 均匀网格）与元素上限（40 万元素、每规则 500 处实例）。仍可这样加速：
+A：几何内核已做三级优化：包围盒**解析计算**（不构建 shapely 几何）、扫描剪枝广相
+（只对容差内的候选对做精算）、圆头图元走**解析距离快路径**（只有矩形/椭圆/多边形/
+被负片裁剪过的元素才调 GEOS）；几何模型 `BoardGeometry` **一次构建、多检查复用**。
+仍可这样加速：
 
 - `--modules fabrication,assembly` 只跑需要的检查
 - `--no-plugins` 不加载插件
 - 报告加 `--no-images`（Excel 内嵌截图是主要耗时项之一）
 - 用 JSON 数据源代替 `.brd`（省掉 extracta 提取时间）
+- 通过 `cfg={"element_cap": ..., "instance_cap": ...}` 调整元素/实例上限
+
+**Q：元素超限被截断了怎么办**
+A：铜箔元素默认上限 40 万，超出会在数据质量里记「截断」并生成一条「中」级提示
+（`数据量超限截断`），说明间距/短路结论可能不完整。处理办法：分区域/分层导出制造数据，
+或调高 `element_cap`（内存换完整性）。每规则的坐标留存上限（默认 500）不影响**处数**，
+处数始终全量计数。
 
 **Q：版图页卡顿**
 A：图层面板关掉不需要的层（尤其多层内层与铺铜），或用「仅铜层」。渲染已按「同层同线宽合并路径」优化，正常十万级图元可流畅缩放。

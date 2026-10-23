@@ -2,7 +2,7 @@
 """Evan DFM — PyInstaller 打包配置 (单文件 exe)。
 
 打包:  build.bat   或   pyinstaller EvanDFM.spec --noconfirm
-产物:  dist\\EvanDFM.exe
+产物:  dist\\DFM.exe
 
 说明:
   * rules/ 与 assets/ 作为数据文件打入包内 (只读出厂配置);
@@ -22,6 +22,7 @@ datas = [
 ]
 
 hiddenimports = [
+    # 检查项靠 import 副作用注册, 打包器无法静态推断 → 必须显式列出
     "dfm.checks.capability",
     "dfm.checks.fabrication",
     "dfm.checks.assembly",
@@ -30,14 +31,34 @@ hiddenimports = [
     "dfm.checks.fabnet",
     "dfm.checks.panelization",
     "dfm.checks.netclass",
+    # 几何内核
+    "dfm.geom.board",
+    "dfm.geom.shapes",
+    "dfm.geom.elements",
+    "dfm.geom.polarity",
+    "dfm.geom.clearance",
+    "dfm.geom.measure",
+    # 解析器
+    "dfm.io.gerber",
+    "dfm.io.excellon",
+    "dfm.io.odbpp",
+    "dfm.io.aperture",
+    "dfm.io.extracta",
+    "dfm.io.skill_export",
+    # 报告
     "dfm.report.snapshot",
     "dfm.report.svg",
     "dfm.report.html",
-    "dfm.io.extracta",
-    "dfm.io.skill_export",
+    "dfm.report.writers",
+    # 第三方
     "yaml",
     "openpyxl",
     "PIL",
+    "shapely",
+    "shapely.geometry",
+    "shapely.ops",
+    "shapely.affinity",
+    "shapely.strtree",
 ]
 
 a = Analysis(
@@ -72,7 +93,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="EvanDFM",
+    name="DFM",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

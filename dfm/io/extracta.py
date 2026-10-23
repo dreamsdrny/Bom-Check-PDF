@@ -26,7 +26,7 @@ Cadence Allegro 自带命令行工具 extracta.exe, 可在**不打开 GUI**的�
 import os
 import re
 import subprocess
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 MIL_TO_MM = 0.0254
 
@@ -221,7 +221,7 @@ def _read_table(path: str) -> dict:
     if not os.path.isfile(path):
         return {"fields": fields, "records": records, "units": units,
                 "scale": MIL_TO_MM, "extents": extents}
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.rstrip("\n").rstrip("\r")
             if not line:
@@ -229,9 +229,8 @@ def _read_table(path: str) -> dict:
             parts = line.split("!")
             tag = parts[0]
             if tag == "A":
-                fields = [p for p in parts[1:] if p != ""] or \
-                         [p for p in parts[1:-1]]
-                fields = [p for p in parts[1:]]
+                # A!field1!field2!...!  (末尾可能带空字段)
+                fields = list(parts[1:])
                 if fields and fields[-1] == "":
                     fields.pop()
             elif tag == "J":

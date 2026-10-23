@@ -18,77 +18,84 @@
 """
 from __future__ import annotations
 
-import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from dfm.core.coverage import Coverage
 from dfm.core.issue import aggregate_by_rule, build_assembly_issues, make_issue
 from dfm.core.registry import REQ_DESIGN, register_check
+from dfm.geom import measure as _measure
+from dfm.geom.measure import DEFAULT_FIDUCIAL_NAMES
 from dfm.io.brd_model import SpatialGrid, point_poly_edge_dist
 
 MAX_INSTANCES = 300
-FIDUCIAL_NAMES = ("FID", "MARK", "FP", "BENCH", "基准")
+
+
+class _Sink(list):
+    """问题实例收集容器 (list 子类)。
+
+    与直接用 list 的差别: **处数全量计数, 实例按上限留存**。
+    旧实现用 ``len(out) >= MAX_INSTANCES: break`` 把"留存数"当成"处数",
+    密集板会报"共 300 处"而真实为上千处, 报告无法作为整改依据。
+    """
+
+    def __init__(self, cap: int = MAX_INSTANCES) -> None:
+        super().__init__()
+        self.cap: int = cap
+        self.counts: dict[tuple[str, str], int] = {}
+        self.retained: dict[tuple[str, str], int] = {}
+
+    def append(self, issue):
+        key = (issue.get("category", "组装"), issue.get("rule", ""))
+        self.counts[key] = self.counts.get(key, 0) + 1
+        if self.retained.get(key, 0) >= self.cap:
+            return
+        self.retained[key] = self.retained.get(key, 0) + 1
+        super().append(issue)
+
+    def truncated_rules(self) -> List[str]:
+        return [f"{c}/{r}" for (c, r), n in self.counts.items()
+                if n > self.retained.get((c, r), 0)]
+
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+
+def _cap_reached(out) -> bool:
+    """list 模式 (直接调用/测试) 保留上限截断; _Sink 模式持续计数不中断。"""
+    return not isinstance(out, _Sink) and len(out) >= MAX_INSTANCES
+#: 基准点位号关键字 (缺省值; 实际以规则集 ``assembly.fiducial_names`` 为准)
+FIDUCIAL_NAMES = DEFAULT_FIDUCIAL_NAMES
 
 
 # ============================================================
-# 几何工具
+# 几何量测 (统一实现见 dfm.geom.measure, 与 source.derive_params 同源)
 # ============================================================
 def component_boxes(design) -> List[Dict[str, Any]]:
-    """按 refdes 汇总焊盘包围盒作为器件本体近似 (按 cx 排序便于邻近搜索)。"""
-    acc: Dict[str, List[float]] = {}
-    side: Dict[str, str] = {}
-    for p in design.pads:
-        ref = p.get("refdes")
-        if not ref or p.get("x") is None:
-            continue
-        w = (p.get("pad_w") or p.get("pad_h") or 0.2) / 2.0
-        h = (p.get("pad_h") or p.get("pad_w") or 0.2) / 2.0
-        b = acc.setdefault(ref, [p["x"], p["y"], p["x"], p["y"], 0])
-        b[0] = min(b[0], p["x"] - w)
-        b[1] = min(b[1], p["y"] - h)
-        b[2] = max(b[2], p["x"] + w)
-        b[3] = max(b[3], p["y"] + h)
-        b[4] += 1
-        if ref not in side and p.get("layer"):
-            side[ref] = str(p["layer"])
-    out = []
-    for ref, (x0, y0, x1, y1, npad) in acc.items():
-        if npad < 1:
-            continue
-        out.append({"refdes": ref, "x0": x0, "y0": y0, "x1": x1, "y1": y1,
-                    "cx": (x0 + x1) / 2.0, "cy": (y0 + y1) / 2.0,
-                    "pins": int(npad), "layer": side.get(ref, "")})
-    out.sort(key=lambda b: b["cx"])
-    return out
+    """按 refdes 汇总焊盘包围盒作为器件本体近似 (转发到共享实现)。"""
+    return _measure.component_boxes(design)
 
 
 def _box_gap(a: dict, b: dict) -> Tuple[float, float, float]:
-    """两包围盒间距与最近点坐标"""
-    dx = max(0.0, max(a["x0"], b["x0"]) - min(a["x1"], b["x1"]))
-    dy = max(0.0, max(a["y0"], b["y0"]) - min(a["y1"], b["y1"]))
-    cx = (min(a["x1"], b["x1"]) + max(a["x0"], b["x0"])) / 2.0
-    cy = (min(a["y1"], b["y1"]) + max(a["y0"], b["y0"])) / 2.0
-    return math.hypot(dx, dy), cx, cy
+    """两包围盒间距与最近点坐标 (转发到共享实现)。"""
+    return _measure.box_gap(a, b)
 
 
 def _component_side(design, refdes: str) -> str:
-    for c in design.components or []:
+    for c in getattr(design, "components", None) or []:
         if str(c.get("refdes", "")) == refdes:
             return str(c.get("side", "")).lower()
     return ""
 
 
 def _pads_by_refdes(design) -> Dict[str, List[dict]]:
-    out: Dict[str, List[dict]] = {}
-    for p in design.pads:
-        if p.get("refdes") and p.get("x") is not None:
-            out.setdefault(p["refdes"], []).append(p)
-    return out
+    return _measure.pads_by_refdes(design)
 
 
 # ============================================================
 # 各检查实现 (返回问题实例)
 # ============================================================
-def check_component_spacing(design, min_gap: float, severity: str = "中") -> List[dict]:
+def check_component_spacing(design, min_gap: float, severity: str = "中",
+                            out: Optional[List[dict]] = None) -> List[dict]:
     """器件本体最小间距"""
     boxes = component_boxes(design)
     if len(boxes) < 2 or not min_gap:
@@ -97,7 +104,7 @@ def check_component_spacing(design, min_gap: float, severity: str = "中") -> Li
     for i, b in enumerate(boxes):
         grid.insert(b["x0"] - min_gap, b["y0"] - min_gap,
                     b["x1"] + min_gap, b["y1"] + min_gap, i)
-    out: List[dict] = []
+    out = [] if out is None else out
     seen = set()
     for i, b in enumerate(boxes):
         for j in grid.query(b["x0"] - min_gap, b["y0"] - min_gap,
@@ -122,12 +129,13 @@ def check_component_spacing(design, min_gap: float, severity: str = "中") -> Li
     return out
 
 
-def check_component_to_edge(design, min_dist: float, severity: str = "中") -> List[dict]:
+def check_component_to_edge(design, min_dist: float, severity: str = "中",
+                              out: Optional[List[dict]] = None) -> List[dict]:
     """器件本体到成型线距离"""
     poly = design.outline or []
     if len(poly) < 3 or not min_dist:
         return []
-    out: List[dict] = []
+    out = [] if out is None else out
     for b in component_boxes(design):
         d = min(point_poly_edge_dist(x, y, poly)[0]
                 for x, y in ((b["x0"], b["y0"]), (b["x1"], b["y1"]),
@@ -141,17 +149,18 @@ def check_component_to_edge(design, min_dist: float, severity: str = "中") -> L
             measured=round(d, 4), required=min_dist, unit="mm",
             x=b["cx"], y=b["cy"], layer=b.get("layer", ""), net="",
             suggestion="内移器件或增加工艺边；无法内移时需与 SMT 厂确认夹持方式"))
-        if len(out) >= MAX_INSTANCES:
+        if _cap_reached(out):
             break
     return out
 
 
-def check_pad_to_edge(design, min_dist: float) -> List[dict]:
+def check_pad_to_edge(design, min_dist: float,
+                      out: Optional[List[dict]] = None) -> List[dict]:
     """SMD 焊盘到成型线距离 (焊接与成型公差)"""
     poly = design.outline or []
     if len(poly) < 3 or not min_dist:
         return []
-    out: List[dict] = []
+    out = [] if out is None else out
     for p in design.pads:
         if not p.get("is_smd") or p.get("x") is None:
             continue
@@ -166,16 +175,17 @@ def check_pad_to_edge(design, min_dist: float) -> List[dict]:
             measured=round(max(d, 0.0), 4), required=min_dist, unit="mm",
             x=p["x"], y=p["y"], layer=p.get("layer", ""), net=p.get("net", ""),
             suggestion="焊盘内移或增加工艺边，避免成型后焊盘破损/无法焊接"))
-        if len(out) >= MAX_INSTANCES:
+        if _cap_reached(out):
             break
     return out
 
 
-def check_chip_pad_symmetry(design, ratio_min: float) -> List[dict]:
+def check_chip_pad_symmetry(design, ratio_min: float,
+                            out: Optional[List[dict]] = None) -> List[dict]:
     """两端片式元件焊盘对称性 (墓碑效应)"""
     if not ratio_min:
         return []
-    out: List[dict] = []
+    out = [] if out is None else out
     for ref, pads in _pads_by_refdes(design).items():
         if len(pads) != 2:
             continue
@@ -195,14 +205,15 @@ def check_chip_pad_symmetry(design, ratio_min: float) -> List[dict]:
             x=a["x"], y=a["y"], layer=a.get("layer", ""), net=a.get("net", ""),
             from_=f"{ref}.1", to=f"{ref}.2",
             suggestion="平衡两端焊盘尺寸与散热铜箔，必要时缩短焊盘长度或做热隔离"))
-        if len(out) >= MAX_INSTANCES:
+        if _cap_reached(out):
             break
     return out
 
 
-def check_fine_pitch(design, pitch_min: float, annular_min: float) -> List[dict]:
+def check_fine_pitch(design, pitch_min: float, annular_min: float,
+                     out: Optional[List[dict]] = None) -> List[dict]:
     """细间距器件 (BGA/QFN) 引脚间距与单边孔环"""
-    out: List[dict] = []
+    out = [] if out is None else out
     for ref, pads in _pads_by_refdes(design).items():
         if len(pads) < 4:
             continue
@@ -228,35 +239,18 @@ def check_fine_pitch(design, pitch_min: float, annular_min: float) -> List[dict]
             measured=round(pitch, 4), required=pitch_min, unit="mm",
             x=pads[0]["x"], y=pads[0]["y"], layer=pads[0].get("layer", ""),
             suggestion="确认板厂细间距能力(线宽/线距/孔环/塞孔)，必要时改扇出方式或更换封装"))
-        if len(out) >= MAX_INSTANCES:
+        if _cap_reached(out):
             break
     return out
 
 
 def _min_pitch(pts: List[Tuple[float, float]]) -> Optional[float]:
-    """最小相邻焊盘中心距 (X 方向排序 + 剪枝扫描, O(n log n))"""
-    n = len(pts)
-    if n < 2:
-        return None
-    order = sorted(range(n), key=lambda i: pts[i][0])
-    best = math.inf
-    for a, b in zip(order, order[1:]):
-        d = math.hypot(pts[b][0] - pts[a][0], pts[b][1] - pts[a][1])
-        if 0 < d < best:
-            best = d
-    for idx, i in enumerate(order):
-        x0, y0 = pts[i]
-        for j in order[idx + 1:]:
-            x1, y1 = pts[j]
-            if x1 - x0 > best:
-                break
-            d = math.hypot(x1 - x0, y1 - y0)
-            if 0 < d < best:
-                best = d
-    return None if best == math.inf else best
+    """最小相邻焊盘中心距 (转发到共享实现 :func:`dfm.geom.measure.min_pad_pitch`)。"""
+    return _measure.min_pad_pitch(pts)
 
 
-def check_via_in_pad(design, allowed: bool = False) -> List[dict]:
+def check_via_in_pad(design, allowed: bool = False,
+                     out: Optional[List[dict]] = None) -> List[dict]:
     """过孔落在 SMD 焊盘内 (需树脂塞孔 + 电镀盖帽, 否则锡膏流失/空洞)"""
     smd = [p for p in design.pads if p.get("is_smd") and p.get("x") is not None]
     if not smd or not design.vias:
@@ -266,7 +260,7 @@ def check_via_in_pad(design, allowed: bool = False) -> List[dict]:
         w = (p.get("pad_w") or 0.3) / 2.0
         h = (p.get("pad_h") or 0.3) / 2.0
         grid.insert(p["x"] - w, p["y"] - h, p["x"] + w, p["y"] + h, i)
-    out: List[dict] = []
+    out = [] if out is None else out
     for v in design.vias:
         if v.get("x") is None:
             continue
@@ -289,12 +283,13 @@ def check_via_in_pad(design, allowed: bool = False) -> List[dict]:
                     net=v.get("net", "") or p.get("net", ""),
                     suggestion="过孔外移(狗骨/扇出)，或采用树脂塞孔+电镀盖帽(VIPPO)工艺并与板厂确认"))
                 break
-        if len(out) >= MAX_INSTANCES:
+        if _cap_reached(out):
             break
     return out
 
 
-def check_silk_on_pad(design, fab_data: List[dict]) -> List[dict]:
+def check_silk_on_pad(design, fab_data: List[dict],
+                      out: Optional[List[dict]] = None) -> List[dict]:
     """丝印上焊盘 (需要 Gerber/ODB 丝印层)"""
     silk = []
     for d in fab_data or []:
@@ -314,7 +309,7 @@ def check_silk_on_pad(design, fab_data: List[dict]) -> List[dict]:
         w = (p.get("pad_w") or 0.3) / 2.0
         h = (p.get("pad_h") or 0.3) / 2.0
         grid.insert(p["x"] - w, p["y"] - h, p["x"] + w, p["y"] + h, i)
-    out: List[dict] = []
+    out = [] if out is None else out
     hit = set()
     for s in silk:
         pts: List[Tuple[float, float]] = []
@@ -342,33 +337,31 @@ def check_silk_on_pad(design, fab_data: List[dict]) -> List[dict]:
                         net=p.get("net", ""),
                         suggestion="丝印移出焊盘区域，或缩小字符/调整位号位置"))
                     break
-        if len(out) >= MAX_INSTANCES:
+        if _cap_reached(out):
             break
     return out
 
 
-def check_fiducials(design, min_count: int, min_diameter: float) -> List[dict]:
-    """基准点 (Fiducial) 数量与尺寸"""
-    out: List[dict] = []
-    top = bot = 0
-    found: List[dict] = []
-    for c in design.components or []:
-        ref = str(c.get("refdes", "")).upper()
-        if not any(k in ref for k in FIDUCIAL_NAMES):
-            continue
-        found.append(c)
-        if str(c.get("side", "")).lower() in ("bottom", "bot", "b"):
-            bot += 1
-        else:
-            top += 1
+def check_fiducials(design, min_count: int, min_diameter: float,
+                    names: Optional[Sequence[str]] = None,
+                    out: Optional[List[dict]] = None) -> List[dict]:
+    """基准点 (Fiducial) 数量与尺寸。
+
+    :param names: 位号识别关键字, 取自规则集 ``assembly.fiducial_names``,
+                  与 :func:`dfm.geom.measure.fiducials` (参数量测) 保持同一来源,
+                  避免"Info 页基准点数"与"问题清单结论"互相矛盾。
+    """
+    out = [] if out is None else out
+    fid = _measure.fiducials(design, names or FIDUCIAL_NAMES)
+    found = fid["all"]
+    top, bot = len(fid["top"]), len(fid["bottom"])
     if not found:
-        for side_label, cnt in (("A面", top), ("B面", bot)):
-            pass
         out.append(make_issue(
             code="ASM-FD", category="组装", rule="基准点数量", severity="高",
-            description=f"未识别到全局基准点 (Fiducial)，贴片对位精度无法保证",
+            description="未识别到全局基准点 (Fiducial)，贴片对位精度无法保证",
             measured=0, required=min_count, unit="个",
-            suggestion="每面至少布置 2-3 个全局基准点(直径≥1mm，周边 5mm 内无铜/无器件)"))
+            suggestion="每面至少布置 2-3 个全局基准点(直径≥1mm，周边 5mm 内无铜/无器件)；"
+                       "若位号命名特殊，请在规则集 assembly.fiducial_names 中补充关键字"))
         return out
     for side_label, cnt in (("A面", top), ("B面", bot)):
         if cnt and cnt < min_count:
@@ -380,7 +373,7 @@ def check_fiducials(design, min_count: int, min_diameter: float) -> List[dict]:
                 suggestion=f"{side_label}补足基准点至 {min_count} 个，并保证对角布置"))
     if min_diameter:
         for c in found:
-            d = _fiducial_diameter(design, str(c.get("refdes", "")))
+            d = _measure.fiducial_diameter(design, str(c.get("refdes", "")))
             if d is not None and d < min_diameter:
                 out.append(make_issue(
                     code="ASM-FD", category="组装", rule="基准点尺寸", severity="中",
@@ -393,19 +386,15 @@ def check_fiducials(design, min_count: int, min_diameter: float) -> List[dict]:
 
 
 def _fiducial_diameter(design, refdes: str) -> Optional[float]:
-    sizes = []
-    for p in design.pads:
-        if str(p.get("refdes", "")) == refdes:
-            w = p.get("pad_w") or p.get("pad_h")
-            if w:
-                sizes.append(w)
-    return min(sizes) if sizes else None
+    """基准点焊盘直径 (转发到共享实现)。"""
+    return _measure.fiducial_diameter(design, refdes)
 
 
 def check_test_points(design, coverage_min: float, pad_min: float,
-                      edge_min: float) -> List[dict]:
+                      edge_min: float,
+                      out: Optional[List[dict]] = None) -> List[dict]:
     """测试点覆盖率 / 尺寸 / 到板边"""
-    out: List[dict] = []
+    out = [] if out is None else out
     tps = [t for t in (design.testpoints or []) if t.get("x") is not None]
     nets = {n: info for n, info in design.nets.items() if len(info.get("nodes") or []) >= 2}
     if nets:
@@ -431,7 +420,7 @@ def check_test_points(design, coverage_min: float, pad_min: float,
                 measured=round(d, 4), required=pad_min, unit="mm",
                 x=t["x"], y=t["y"], layer=t.get("layer", ""), net=t.get("net", ""),
                 suggestion="增大测试点焊盘直径，保证探针接触可靠"))
-            if len(out) >= MAX_INSTANCES:
+            if _cap_reached(out):
                 break
     poly = design.outline or []
     if edge_min and len(poly) >= 3:
@@ -446,7 +435,7 @@ def check_test_points(design, coverage_min: float, pad_min: float,
                 measured=round(d, 4), required=edge_min, unit="mm",
                 x=t["x"], y=t["y"], net=t.get("net", ""),
                 suggestion="测试点内移或增加工艺边，保证治具压床可接触"))
-            if len(out) >= MAX_INSTANCES:
+            if _cap_reached(out):
                 break
     return out
 
@@ -464,9 +453,9 @@ def check_test_points(design, coverage_min: float, pad_min: float,
 )
 def run_assembly(ctx) -> List[dict]:
     design = ctx.design
-    a = lambda key, default: ctx.rule_param("assembly", key, default)  # noqa: E731
+    a = lambda key, default: ctx.rule_param("assembly", key, default)
 
-    instances: List[dict] = []
+    sink = _Sink(cap=int(ctx.options.get("instance_cap") or MAX_INSTANCES))
     spacing = float(a("min_component_spacing", 0.5) or 0)
     edge = float(a("component_to_edge", 2.0) or 0)
     edge_sev = str(a("component_to_edge_severity", "中") or "中")
@@ -477,21 +466,51 @@ def run_assembly(ctx) -> List[dict]:
     vip_allowed = bool(a("via_in_pad_allowed", False))
     fid_min = int(a("fiducial_min", 2) or 0)
     fid_dia = float(a("fiducial_diameter", 1.0) or 0)
+    fid_names = a("fiducial_names", None) or FIDUCIAL_NAMES
     tp_cov = float(a("test_coverage_min", 0.0) or 0)
     tp_pad = float(a("test_pad_diameter", 0.8) or 0)
     tp_edge = float(a("test_pad_to_edge", 1.27) or 0)
 
-    instances += check_component_spacing(design, spacing)
-    instances += check_component_to_edge(design, edge, edge_sev)
-    instances += check_pad_to_edge(design, pad_edge)
-    instances += check_chip_pad_symmetry(design, sym)
-    instances += check_fine_pitch(design, pitch, annular)
-    instances += check_via_in_pad(design, vip_allowed)
-    instances += check_silk_on_pad(design, ctx.fab_data)
-    instances += check_fiducials(design, fid_min, fid_dia)
-    instances += check_test_points(design, tp_cov, tp_pad, tp_edge)
+    # 覆盖率: 阈值为 0 表示该项未启用 (记入未判定, 不静默跳过)
+    cov = Coverage(check_id="assembly")
+    for cat, rule, limit in (("组装", "器件间距", spacing),
+                             ("组装", "器件到板边", edge),
+                             ("组装", "焊盘到板边", pad_edge),
+                             ("组装", "片式元件焊盘对称性", sym),
+                             ("组装", "BGA焊盘", pitch),
+                             ("组装", "基准点数量", fid_min),
+                             ("组装", "基准点尺寸", fid_dia),
+                             ("测试", "测试点尺寸", tp_pad),
+                             ("测试", "测试点到板边", tp_edge)):
+        if limit:
+            cov.judged(cat, rule, limit, source="规则集 assembly")
+        else:
+            cov.missed(cat, rule, "规则集阈值为 0 (未启用)")
+    if tp_cov:
+        cov.judged("测试", "测试点覆盖率", tp_cov, source="规则集 assembly")
+    else:
+        cov.missed("测试", "测试点覆盖率", "规则集 test_coverage_min=0 (未启用)")
+    if not (getattr(design, "outline", None) and len(design.outline) >= 3):
+        cov.missed("组装", "器件到板边", "无板框轮廓, 无法判定到板边距离")
+        cov.missed("组装", "焊盘到板边", "无板框轮廓, 无法判定到板边距离")
+        cov.missed("测试", "测试点到板边", "无板框轮廓, 无法判定到板边距离")
+    if not any(str(d.get("name", "")).lower().find("silk") >= 0 or
+               str(d.get("name", "")).lower().find("gto") >= 0
+               for d in (ctx.fab_data or [])):
+        cov.missed("丝印", "丝印上焊盘", "制造数据中无丝印层")
 
-    # 参数化装配项 (极性标识 / 钢网 / 统计类)
+    check_component_spacing(design, spacing, out=sink)
+    check_component_to_edge(design, edge, edge_sev, out=sink)
+    check_pad_to_edge(design, pad_edge, out=sink)
+    check_chip_pad_symmetry(design, sym, out=sink)
+    check_fine_pitch(design, pitch, annular, out=sink)
+    check_via_in_pad(design, vip_allowed, out=sink)
+    check_silk_on_pad(design, ctx.fab_data, out=sink)
+    check_fiducials(design, fid_min, fid_dia, names=fid_names, out=sink)
+    check_test_points(design, tp_cov, tp_pad, tp_edge, out=sink)
+    instances = list(sink)
+
+    # 参数化装配项 (极性标识 / 统计类)
     param_issues = build_assembly_issues(ctx.params, rules=ctx.rules)
     # 避免与几何检查结果重复: 几何已判定的规则不再走参数化
     geo_rules = {it["rule"] for it in instances}
@@ -500,10 +519,16 @@ def run_assembly(ctx) -> List[dict]:
     ctx.extras.setdefault("instances", []).extend(instances)
     ctx.extras["assembly_stats"] = {
         "器件数": len(component_boxes(design)),
-        "焊盘数": len(design.pads or []),
-        "SMD焊盘": sum(1 for p in (design.pads or []) if p.get("is_smd")),
-        "测试点数": len(design.testpoints or []),
-        "几何问题实例": len(instances),
+        "焊盘数": len(getattr(design, "pads", None) or []),
+        "SMD焊盘": sum(1 for p in (getattr(design, "pads", None) or []) if p.get("is_smd")),
+        "测试点数": len(getattr(design, "testpoints", None) or []),
+        "违规处数": sink.total(),
+        "留存实例": len(instances),
     }
-    ctx.note(f"    装配/SMT DFM: 实例 {len(instances)} 处, 参数化问题 {len(param_issues)} 项")
-    return aggregate_by_rule(instances) + param_issues
+    ctx.set_coverage(cov)
+    for rule in sink.truncated_rules():
+        ctx.add_truncation(f"装配规则 {rule} 违规处数超出留存上限 {sink.cap}, "
+                           f"已按真实计数报告")
+    ctx.note(f"    装配/SMT DFM: 违规 {sink.total()} 处 (留存 {len(instances)}), "
+             f"参数化问题 {len(param_issues)} 项, 覆盖率 {cov.ratio * 100:.0f}%")
+    return aggregate_by_rule(instances, counts=dict(sink.counts)) + param_issues

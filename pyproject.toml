@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evan-dfm"
-version = "1.0.0"
+version = "1.1.0"
 description = "Evan DFM — PCB 可制造性(DFM)专业分析软件 (Gerber/ODB++/Allegro BRD)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,6 +13,7 @@ authors = [{ name = "Evan" }]
 keywords = ["PCB", "DFM", "Gerber", "ODB++", "Allegro", "SMT", "manufacturing"]
 dependencies = [
     "PySide6>=6.5",
+    "shapely>=2.0",
     "openpyxl>=3.1",
     "PyYAML>=6.0",
     "Pillow>=9.0",
